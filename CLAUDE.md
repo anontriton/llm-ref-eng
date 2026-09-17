@@ -81,11 +81,18 @@ force. A dump whose manifest disagrees with the run being compared is a failure,
 not a warning.
 
 ## Environment
-Missing on this machine as of setup; install before the phase that needs it:
-- `torch`, `numpy`, `transformers` (Phase 0/1) - `transformers` is for
-  validation and tokenization ONLY
-- `cmake` (Phase 2)
-- Emscripten SDK / `emcc` (Phase 5)
+Python deps live in `.venv/` (gitignored). Python 3.14.7, torch 2.14.0+cpu,
+numpy 2.5.3, transformers 5.17.0. Recreate with:
+
+    python3 -m venv .venv
+    .venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+    .venv/bin/python -m pip install numpy transformers
+
+Run Python entry points from the repo root, e.g. `.venv/bin/python
+reference/validate_hf.py`.
+
+Still needed later: `cmake` (Phase 2), Emscripten SDK / `emcc` (Phase 5).
+Neither is installed yet.
 
 Present: g++ 16.2.1, make, ninja, 8 cores, AVX2 + FMA + AVX512F.
 Target the AVX2 backend regardless of AVX512 availability - WASM SIMD is 128-bit
@@ -101,7 +108,7 @@ and the abstraction layer is designed against that width.
   or a committed benchmark JSON.
 
 ## Phase status
-- [ ] 0 foundations
+- [x] 0 foundations
 - [ ] 1 oracle
 - [ ] 2 correct C++
 - [ ] 3 perf
@@ -111,3 +118,8 @@ and the abstraction layer is designed against that width.
 
 Update this checklist when a phase's exit criteria are met, not when its code is
 merely written.
+
+Phase 0 exit criteria, met: weights downloaded and checksum-pinned; the
+hand-written reference loads them; `reference/validate_hf.py` agrees with HF on
+logits within tolerance across 4 prompts and reproduces 50 identical greedy
+tokens.
