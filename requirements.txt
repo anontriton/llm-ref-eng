@@ -1,0 +1,5 @@
+# Phase 0/1 only. The engine itself has no Python dependency.
+numpy>=1.24
+torch>=2.0
+# Validation + tokenization ONLY -- never the reference implementation itself.
+transformers>=4.38

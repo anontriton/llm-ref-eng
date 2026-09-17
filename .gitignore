@@ -1,0 +1,33 @@
+# Weights and converted checkpoints
+weights/
+*.safetensors
+*.bin
+*.gpt2bin
+
+# Oracle / engine activation dumps
+oracle/activations/**
+!oracle/activations/.gitkeep
+engine/dumps/
+
+# Build output
+build/
+engine/build/
+web/build/
+*.o
+*.a
+*.so
+*.wasm
+*.js.mem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
