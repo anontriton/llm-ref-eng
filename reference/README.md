@@ -11,8 +11,9 @@ against what this produces.
                    weight [in, out], which is the checkpoint's own layout.
 - `validate_hf.py` [done] check `model.py` against HF `GPT2LMHeadModel`. This is
                    the ONLY place HF model code may be called.
-- `dump.py`        [Phase 1] run a prompt and write every tapped activation to
-                   `oracle/activations/` plus `oracle/manifest.json`.
+- `dump.py`        [done] run the fixed prompt set and write every tapped
+                   activation to `oracle/activations/<run>/` plus
+                   `oracle/manifest.json`. Single-threaded for reproducibility.
 
 Readability wins over cleverness here: this file is documentation for the C++
 port as much as it is code.

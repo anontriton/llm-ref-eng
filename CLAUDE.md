@@ -109,7 +109,7 @@ and the abstraction layer is designed against that width.
 
 ## Phase status
 - [x] 0 foundations
-- [ ] 1 oracle
+- [x] 1 oracle
 - [ ] 2 correct C++
 - [ ] 3 perf
 - [ ] 4 quantization
@@ -123,3 +123,11 @@ Phase 0 exit criteria, met: weights downloaded and checksum-pinned; the
 hand-written reference loads them; `reference/validate_hf.py` agrees with HF on
 logits within tolerance across 4 prompts and reproduces 50 identical greedy
 tokens.
+
+Phase 1 exit criteria, met: `reference/dump.py` writes 615 checksummed tensors
+across 5 runs plus `oracle/manifest.json`; `oracle/compare.py` enforces
+provenance and tolerance and reports the first divergence in forward order;
+`oracle/test_compare.py` passes 12/12, proving the comparison rejects
+above-tolerance error, NaN, shape drift, stale dumps, wrong weights, wrong
+prompts, and quantized policies -- and reports the earliest divergence rather
+than the largest.

@@ -122,11 +122,16 @@ class CausalSelfAttention(nn.Module):
 
         # Scale by 1/sqrt(d_head) = 1/sqrt(64), NOT 1/sqrt(d_model).
         scores = (q @ k.transpose(-2, -1)) / math.sqrt(cfg.d_head)
+        # Tapped BEFORE masking, so the oracle holds finite numbers. The
+        # comparison only trusts the causal (lower-triangular) region, which is
+        # the part any implementation has to compute; how an implementation
+        # spells "masked" (-inf, -1e9, or simply not computing it) is its own
+        # business and shows up in .probs, where it actually matters.
+        tap(f"{prefix}.scores", scores)
 
         # Causal mask: position t may not attend to anything after t.
         causal = torch.ones(T, T, dtype=torch.bool, device=x.device).tril()
         scores = scores.masked_fill(~causal, float("-inf"))
-        tap(f"{prefix}.scores", scores)
 
         probs = torch.softmax(scores, dim=-1)
         tap(f"{prefix}.probs", probs)
