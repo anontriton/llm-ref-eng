@@ -95,6 +95,20 @@ def _perturb_lower_triangle(a):
     return a
 
 
+def _scale(factor: float):
+    """Relative error of exactly (factor - 1) on every element."""
+    return lambda a: a * factor
+
+
+def _nudge_smallest(delta: float):
+    """Perturb only the element closest to zero."""
+    def fn(a):
+        a = a.copy()
+        a.reshape(-1)[np.argmin(np.abs(a))] += delta
+        return a
+    return fn
+
+
 def _inject_nan(a):
     a = a.copy()
     a.reshape(-1)[0] = np.nan
@@ -158,6 +172,24 @@ CASES = [
 
     ("quantized policy voids layer-wise comparison",
      _quantized_policy, 2, "layer-wise matching is void"),
+
+    # The next three pin the combined rule, |a - b| <= max_abs + max_rel * |a|.
+    # block.2.mlp.out holds one of GPT-2's outlier dimensions (~2317 in this
+    # run), which is exactly where a bare absolute limit stops being meaningful.
+
+    ("relative error within max_rel passes, even when absolute error is large",
+     lambda m, d: rewrite(m, d, "block.2.mlp.out", _scale(1 + 5e-4)),
+     0, "ORACLE COMPARISON PASSED"),
+
+    ("relative error above max_rel is caught, even at large magnitude",
+     lambda m, d: rewrite(m, d, "block.2.mlp.out", _scale(1 + 5e-3)),
+     1, "first divergence at block.2.mlp.out"),
+
+    # A masked attention position is an exact zero; leaking 5e-4 of probability
+    # into it is 5x max_abs, and the relative term offers no slack at zero.
+    ("near-zero values are still held to max_abs",
+     lambda m, d: rewrite(m, d, "block.5.attn.probs", _nudge_smallest(5e-4)),
+     1, "first divergence at block.5.attn.probs"),
 ]
 
 

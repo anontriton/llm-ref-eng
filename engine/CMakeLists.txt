@@ -18,6 +18,8 @@ if(GPT2_SOURCES)
   add_library(gpt2 ${GPT2_SOURCES})
   target_include_directories(gpt2 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+  add_subdirectory(tools)
+
   enable_testing()
   add_subdirectory(tests)
 else()

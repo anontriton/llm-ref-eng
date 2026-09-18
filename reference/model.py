@@ -57,9 +57,10 @@ class GPT2Config:
 def gelu_new(x: torch.Tensor) -> torch.Tensor:
     """The tanh approximation of GELU, which is what GPT-2 was trained with.
 
-    NOT the erf formulation. The two differ by ~1e-3 in the tails, which is an
-    order of magnitude above our 1e-4 tolerance -- using the wrong one is a
-    silent accuracy bug, not a crash.
+    NOT the erf formulation. The two peak 4.7e-4 apart near |x| ~ 2.7 --
+    mid-range, not the tails, where both converge -- which is ~5x our 1e-4
+    absolute tolerance. Using the wrong one is a silent accuracy bug, not a
+    crash.
     """
     c = math.sqrt(2.0 / math.pi)
     return 0.5 * x * (1.0 + torch.tanh(c * (x + 0.044715 * torch.pow(x, 3.0))))

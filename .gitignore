@@ -9,6 +9,9 @@ oracle/activations/**
 !oracle/activations/.gitkeep
 engine/dumps/
 
+# Run definitions, derived from oracle/manifest.json by scripts/export_runs.py
+engine/runs.tsv
+
 # Build output
 build/
 engine/build/

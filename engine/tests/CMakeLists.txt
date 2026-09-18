@@ -5,5 +5,9 @@ foreach(test_src ${GPT2_TEST_SOURCES})
   get_filename_component(test_name "${test_src}" NAME_WE)
   add_executable(${test_name} "${test_src}")
   target_link_libraries(${test_name} PRIVATE gpt2)
+  # Tests that need generated artifacts (the converted weight file) locate
+  # them from here rather than depending on the working directory.
+  target_compile_definitions(${test_name} PRIVATE
+    GPT2_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

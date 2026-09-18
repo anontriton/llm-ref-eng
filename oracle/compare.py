@@ -10,6 +10,18 @@ wrong, every later mismatch is an echo, not a finding.
     python oracle/compare.py engine/dumps/manifest.json --run capital -v
     python oracle/compare.py oracle/manifest.json          # reference vs itself
 
+The fp32 rule is the numpy.allclose form, applied per element:
+
+    |candidate - reference| <= max_abs + max_rel * |reference|
+
+Both numbers come from the reference manifest. Combining them this way, rather
+than demanding each independently, is what makes the rule satisfiable in fp32:
+GPT-2's residual stream has outlier dimensions near 2650, where one fp32 ulp is
+2.4e-4 -- so a bare 1e-4 absolute limit would demand bit-exact agreement with
+PyTorch's GEMM summation order, which is not a correctness property. Near zero
+the max_abs term governs, so values produced by cancellation are still held to
+an absolute bound rather than an unbounded relative one.
+
 Exit codes: 0 pass, 1 numeric divergence, 2 provenance or usage error.
 """
 
@@ -108,33 +120,43 @@ def compare_tensor(ref: np.ndarray, cand: np.ndarray, tol: dict,
 
     finite = np.isfinite(ref) & np.isfinite(cand) & mask
     if not finite.any():
-        return result | {"max_abs": 0.0, "max_rel": 0.0, "n": 0}
+        return result | {"budget": 0.0, "max_abs": 0.0, "max_rel": 0.0, "n": 0}
 
     diff = np.zeros(ref.shape)
     diff[finite] = np.abs(ref[finite] - cand[finite])
 
+    # The verdict: each element against its own bound. `budget` is the fraction
+    # of that bound the worst element uses, so 1.0 is exactly at the limit and
+    # anything above fails. Reporting it shows how much headroom a passing
+    # engine has, which is what tells you whether an optimization is safe.
+    bound = tol["max_abs"] + tol["max_rel"] * np.abs(ref)
+    used = np.zeros(ref.shape)
+    used[finite] = diff[finite] / bound[finite]
+    worst_idx = np.unravel_index(np.argmax(used), used.shape)
+    budget = float(used[worst_idx])
+
+    # Diagnostics only -- they no longer decide anything. Relative error is
+    # reported only above rel_floor, where it carries meaning; below it, it is
+    # noise amplification.
     abs_idx = np.unravel_index(np.argmax(diff), diff.shape)
     max_abs = float(diff[abs_idx])
-
-    # Relative error only where the reference value is large enough to carry
-    # meaning; below the floor, relative error is just noise amplification.
     rel = np.zeros(ref.shape)
     big = finite & (np.abs(ref) > tol["rel_floor"])
     if big.any():
         rel[big] = diff[big] / np.abs(ref[big])
-    rel_idx = np.unravel_index(np.argmax(rel), rel.shape)
-    max_rel = float(rel[rel_idx])
+    max_rel = float(rel.max())
 
-    ok = max_abs < tol["max_abs"] and max_rel < tol["max_rel"]
+    ok = budget <= 1.0
     return {
         "ok": ok,
         "reason": None if ok else "tolerance exceeded",
+        "budget": budget,
         "max_abs": max_abs,
         "max_rel": max_rel,
-        "abs_at": tuple(int(i) for i in abs_idx),
-        "rel_at": tuple(int(i) for i in rel_idx),
-        "ref_at_abs": float(ref[abs_idx]),
-        "cand_at_abs": float(cand[abs_idx]),
+        "worst_at": tuple(int(i) for i in worst_idx),
+        "ref_at_worst": float(ref[worst_idx]),
+        "cand_at_worst": float(cand[worst_idx]),
+        "bound_at_worst": float(bound[worst_idx]),
         "n": int(finite.sum()),
     }
 
@@ -226,8 +248,8 @@ def main() -> int:
         return 2
 
     tol = ref_manifest["tolerance"]
-    print(f"\nprovenance ok  |  tolerance: abs < {tol['max_abs']:g}, "
-          f"rel < {tol['max_rel']:g} above |x| > {tol['rel_floor']:g}")
+    print(f"\nprovenance ok  |  tolerance: |cand - ref| <= "
+          f"{tol['max_abs']:g} + {tol['max_rel']:g} * |ref|")
 
     cand_runs = {r["name"]: r for r in cand_manifest["runs"]}
     wanted = args.runs or [r["name"] for r in ref_manifest["runs"]]
@@ -278,6 +300,7 @@ def main() -> int:
             if args.verbose:
                 flag = "ok  " if verdict["ok"] else "FAIL"
                 print(f"  {flag} {tname:32s} "
+                      f"budget {verdict.get('budget', 0) * 100:6.1f}%  "
                       f"abs {verdict.get('max_abs', 0):.3e}  "
                       f"rel {verdict.get('max_rel', 0):.3e}")
 
@@ -285,13 +308,13 @@ def main() -> int:
                 divergence = (tname, verdict)
                 break
 
-            if worst is None or verdict["max_abs"] > worst[1]["max_abs"]:
+            if worst is None or verdict["budget"] > worst[1]["budget"]:
                 worst = (tname, verdict)
 
         if divergence is None:
             tname, v = worst
-            print(f"  PASS   worst tensor {tname}  "
-                  f"abs {v['max_abs']:.3e}  rel {v['max_rel']:.3e}")
+            print(f"  PASS   worst tensor {tname} at {v['budget'] * 100:.1f}% of "
+                  f"budget  (abs {v['max_abs']:.3e}, rel {v['max_rel']:.3e})")
         else:
             failed = True
             tname, v = divergence
@@ -299,11 +322,12 @@ def main() -> int:
                           if r["name"] == tname), -1)
             print(f"  FAIL   first divergence at {tname} (tensor #{order})")
             if v["reason"] == "tolerance exceeded":
-                print(f"         max_abs {v['max_abs']:.6e} at index "
-                      f"{v['abs_at']}  (ref {v['ref_at_abs']:+.6f}, "
-                      f"candidate {v['cand_at_abs']:+.6f})")
-                print(f"         max_rel {v['max_rel']:.6e} at index "
-                      f"{v['rel_at']}")
+                err = abs(v['cand_at_worst'] - v['ref_at_worst'])
+                print(f"         {v['budget'] * 100:.1f}% of budget at index "
+                      f"{v['worst_at']}  (ref {v['ref_at_worst']:+.6f}, "
+                      f"candidate {v['cand_at_worst']:+.6f})")
+                print(f"         |diff| {err:.6e} > bound {v['bound_at_worst']:.6e}"
+                      f"  (max_abs {v['max_abs']:.3e}, max_rel {v['max_rel']:.3e})")
             else:
                 print(f"         {v['reason']}")
 

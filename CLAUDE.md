@@ -29,9 +29,16 @@ reference.
 - Attention scale = 1/sqrt(64) (head dim, not d_model)
 
 ## Tolerance policy (fp32 phases)
-- Per-layer max absolute error < 1e-4
-- Per-layer relative error < 1e-3 above a magnitude floor
+- Per element: |engine - reference| <= 1e-4 + 1e-3 * |reference|
+  (the numpy.allclose form: the 1e-4 term governs near zero, the 1e-3 term at
+  large magnitude)
 - Top-1 token identical for 50 consecutive greedy steps
+
+The two numbers combine; they are not independent limits. GPT-2's residual
+stream has outlier dimensions near 2650, where one fp32 ulp is 2.4e-4, so a
+bare 1e-4 absolute limit would demand bit-exact agreement with PyTorch's GEMM
+summation order -- not a correctness property. Revised in Phase 2 on evidence;
+see the Phase 2 note below.
 
 ## Tolerance policy (quantized phases)
 Layer-wise matching is void. Use instead:
@@ -91,10 +98,9 @@ numpy 2.5.3, transformers 5.17.0. Recreate with:
 Run Python entry points from the repo root, e.g. `.venv/bin/python
 reference/validate_hf.py`.
 
-Still needed later: `cmake` (Phase 2), Emscripten SDK / `emcc` (Phase 5).
-Neither is installed yet.
+Still needed later: Emscripten SDK / `emcc` (Phase 5). Not installed yet.
 
-Present: g++ 16.2.1, make, ninja, 8 cores, AVX2 + FMA + AVX512F.
+Present: g++ 16.2.1, cmake, make, ninja, 8 cores, AVX2 + FMA + AVX512F.
 Target the AVX2 backend regardless of AVX512 availability - WASM SIMD is 128-bit
 and the abstraction layer is designed against that width.
 
@@ -110,7 +116,7 @@ and the abstraction layer is designed against that width.
 ## Phase status
 - [x] 0 foundations
 - [x] 1 oracle
-- [ ] 2 correct C++
+- [x] 2 correct C++
 - [ ] 3 perf
 - [ ] 4 quantization
 - [ ] 5 WASM
@@ -131,3 +137,14 @@ provenance and tolerance and reports the first divergence in forward order;
 above-tolerance error, NaN, shape drift, stale dumps, wrong weights, wrong
 prompts, and quantized policies -- and reports the earliest divergence rather
 than the largest.
+
+Phase 2 exit criteria, met: the C++ engine dumps all 615 tensors across the 5
+oracle runs and `oracle/compare.py` passes every one, worst tensor at 52% of
+its tolerance budget; `oracle/check_greedy.py` reproduces 50/50 greedy tokens;
+5 ctest suites pass; `oracle/test_compare.py` passes 15/15. The tolerance rule
+was revised from independent abs-AND-rel limits to the combined form above,
+after measurement showed the engine's matmul is as accurate or more accurate
+than PyTorch's against a float64 ground truth given identical inputs -- the old
+rule was failing fp32 resolution, not the engine. Every dot product and sum
+accumulates across a fixed 8 lanes (`backend::kAccumLanes`) so the Phase 3
+AVX2 and Phase 5 wasm_simd128 backends can reproduce scalar results exactly.

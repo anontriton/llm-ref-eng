@@ -68,8 +68,16 @@ Dumps are single-threaded on purpose: multithreaded reductions can reassociate
 and shift the last couple of bits, and an oracle that moves is not an oracle.
 
 ## Tolerances
-fp32 phases: max abs error < 1e-4; relative error < 1e-3 above a magnitude
-floor of 1e-2; top-1 token identical for 50 consecutive greedy steps.
+fp32 phases: per element, `|candidate - reference| <= 1e-4 + 1e-3 * |reference|`
+(the numpy.allclose form), plus top-1 token identical for 50 consecutive greedy
+steps (`check_greedy.py`). The two numbers combine rather than acting as
+independent limits: at GPT-2's outlier magnitudes (~2650) one fp32 ulp already
+exceeds 1e-4. The manifest's `rel_floor` now only gates the `max_rel` figure
+`compare.py` reports as a diagnostic; it does not decide pass/fail.
+
+`compare.py` reports each passing run's worst tensor as a percentage of its
+budget. That headroom is the number to watch across Phase 3: an optimization
+that moves it sharply has changed the arithmetic, even if it still passes.
 
 Quantized phases: layer-wise matching is void, and `compare.py` refuses to run
 if either manifest declares a non-fp32 policy. Use perplexity on a fixed
