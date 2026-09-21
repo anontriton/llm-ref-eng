@@ -9,3 +9,7 @@ target_link_libraries(gpt2_generate PRIVATE gpt2)
 # Phase 3's baseline: prefill and decode timings. bench/run.py wraps it.
 add_executable(gpt2_bench gpt2_bench.cpp)
 target_link_libraries(gpt2_bench PRIVATE gpt2)
+
+# Phase 4: perplexity / top-1 / KL dumps. eval/metrics.py judges them.
+add_executable(gpt2_eval gpt2_eval.cpp)
+target_link_libraries(gpt2_eval PRIVATE gpt2)

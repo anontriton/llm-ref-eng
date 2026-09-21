@@ -7,7 +7,7 @@
 
 namespace gpt2::npy {
 
-std::string header_f32(const std::vector<int64_t>& shape) {
+std::string header(const char* descr, const std::vector<int64_t>& shape) {
   std::string dims;
   for (size_t i = 0; i < shape.size(); ++i) {
     dims += std::to_string(shape[i]);
@@ -18,8 +18,8 @@ std::string header_f32(const std::vector<int64_t>& shape) {
   }
   if (shape.size() == 1) dims.resize(dims.size() - 1);  // "(5, )" -> "(5,)"
 
-  std::string dict = "{'descr': '<f4', 'fortran_order': False, 'shape': (" +
-                     dims + "), }";
+  std::string dict = std::string("{'descr': '") + descr +
+                     "', 'fortran_order': False, 'shape': (" + dims + "), }";
 
   // Magic(6) + version(2) + header length(2) + dict + '\n' padded to 64.
   const size_t prefix = 10;
@@ -30,9 +30,11 @@ std::string header_f32(const std::vector<int64_t>& shape) {
   return dict;
 }
 
-void write_f32(const std::string& path, const float* data,
-               const std::vector<int64_t>& shape) {
-  const std::string dict = header_f32(shape);
+namespace {
+
+void write_raw(const std::string& path, const char* descr, const void* data,
+               size_t elem_size, const std::vector<int64_t>& shape) {
+  const std::string dict = header(descr, shape);
   if (dict.size() > 0xffff) throw std::runtime_error("npy: header too long");
 
   const int64_t n = std::accumulate(shape.begin(), shape.end(), int64_t{1},
@@ -48,10 +50,23 @@ void write_f32(const std::string& path, const float* data,
                                 static_cast<unsigned char>((dict.size() >> 8) & 0xff)};
   out.write(reinterpret_cast<const char*>(len), 2);
   out.write(dict.data(), static_cast<std::streamsize>(dict.size()));
-  out.write(reinterpret_cast<const char*>(data),
-            static_cast<std::streamsize>(n) * static_cast<std::streamsize>(sizeof(float)));
+  out.write(static_cast<const char*>(data),
+            static_cast<std::streamsize>(n) *
+                static_cast<std::streamsize>(elem_size));
 
   if (!out) throw std::runtime_error("npy: short write to " + path);
+}
+
+}  // namespace
+
+void write_f32(const std::string& path, const float* data,
+               const std::vector<int64_t>& shape) {
+  write_raw(path, "<f4", data, sizeof(float), shape);
+}
+
+void write_i32(const std::string& path, const int32_t* data,
+               const std::vector<int64_t>& shape) {
+  write_raw(path, "<i4", data, sizeof(int32_t), shape);
 }
 
 }  // namespace gpt2::npy

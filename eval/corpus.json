@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "wikitext2",
+  "source": {
+    "server": "https://datasets-server.huggingface.co/rows",
+    "dataset": "Salesforce/wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "test",
+    "rows": 400,
+    "offset": 0
+  },
+  "text_sha256": "24b251b594c7c380b2d51036c525b4840feda097e7139d264e485346b075b690",
+  "text_chars": 134456,
+  "n_tokens": 8192,
+  "ids_sha256": "84cd8bb46d306719f3f85a9e7e3447b827dd6759cd7040595849f132fb8dab57",
+  "preview": " = Robert Boulter = \n Robert Boulter is an English film , television and theatre actor . He had a guest @-@ starring role on the television series The Bill in 2000 . This was followed by a starring ro"
+}

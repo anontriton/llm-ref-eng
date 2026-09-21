@@ -36,3 +36,6 @@ venv/
 .idea/
 .vscode/
 engine/build-*/
+
+# Phase 4 eval dumps (the .npy are large; summaries go to eval/results/)
+eval/runs/
