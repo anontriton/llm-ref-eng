@@ -100,7 +100,8 @@ reference/validate_hf.py`.
 
 Still needed later: Emscripten SDK / `emcc` (Phase 5). Not installed yet.
 
-Present: g++ 16.2.1, cmake, make, ninja, 8 cores, AVX2 + FMA + AVX512F.
+Present: g++ 16.2.1, cmake, make, ninja, 4 cores / 8 threads, AVX2 + FMA +
+AVX512F.
 Target the AVX2 backend regardless of AVX512 availability - WASM SIMD is 128-bit
 and the abstraction layer is designed against that width.
 
@@ -117,7 +118,7 @@ and the abstraction layer is designed against that width.
 - [x] 0 foundations
 - [x] 1 oracle
 - [x] 2 correct C++
-- [ ] 3 perf
+- [x] 3 perf
 - [ ] 4 quantization
 - [ ] 5 WASM
 - [ ] 6 docs
@@ -148,3 +149,28 @@ than PyTorch's against a float64 ground truth given identical inputs -- the old
 rule was failing fp32 resolution, not the engine. Every dot product and sum
 accumulates across a fixed 8 lanes (`backend::kAccumLanes`) so the Phase 3
 AVX2 and Phase 5 wasm_simd128 backends can reproduce scalar results exactly.
+
+Phase 3 exit criteria, met: KV cache, blocked GEMM, AVX2 backend, and threads,
+in that order, each validated against the oracle and each leaving a committed
+benchmark JSON. At T=128/128, 8 threads, avx2:
+
+    tokens/sec         0.114 ->  42.554     373x
+    prefill ms          5784 ->     493      12x
+    decode ms/token     8781 ->    19.8     443x
+
+Every step is bit-identical to the one before it -- verified by comparing
+engine dumps against engine dumps, not argued from tolerance -- so the engine
+still sits at 52.0% of budget against the PyTorch oracle, the same figure it
+reported at the end of Phase 2. `-DGPT2_BACKEND=avx2` selects the backend; only
+that translation unit gets ISA flags. The AVX2 backend refuses FMA on purpose,
+since fusing rounds once where the scalar backend rounds twice and
+wasm_simd128 has no FMA to offer in Phase 5. Thread count is not a numerical
+parameter: 615 tensors bit-identical at 1, 3 and 8 threads, and test_threading
+pins that property directly.
+
+Two notes for Phase 4. The `bench/results/` entry from f4e17d7 predates a fix
+to how decode steps were counted and is not comparable to later runs; results
+carrying `detail.decode_steps` use the current accounting. And `Model::forward`
+computes logits for every position, which prefill does not need -- only the
+last row feeds generation, and lm_head is 31% of prefill's arithmetic. It was
+left alone because it changes the forward contract the oracle dumps depend on.

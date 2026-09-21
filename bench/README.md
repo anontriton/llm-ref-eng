@@ -82,4 +82,12 @@ context: `config`, `prompt.tokens`, and `prompt.generate`. Changing
 `--generate` changes `decode_ms_per_token`, because without a KV cache the
 per-step cost grows with sequence length.
 
+## History
+
+Results from f4e17d7 divided decode time by `generate`, counting one step that
+repeated prefill's work. Later ones divide by `generate - 1` and record the
+count in `detail.decode_steps`; the presence of that field is what tells the
+two apart. The f4e17d7 baseline stays as the record of what was measured, but
+the comparable scalar, no-KV baseline is the one at 237311a.
+
 Phase: end of 2 (baseline), then every commit in 3+.
