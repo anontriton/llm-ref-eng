@@ -105,13 +105,17 @@ def main() -> int:
             [sys.executable, str(ROOT / "eval" / "metrics.py"), str(args.out),
              "--reference", str(args.reference), "--json"],
             capture_output=True, text=True, cwd=ROOT)
-        sys.stdout.write(judge.stdout.split("\n{", 1)[0])
-        if "{" in judge.stdout:
-            verdict = json.loads("{" + judge.stdout.split("\n{", 1)[1])
-        else:
+        # metrics.py prints a human table, then the JSON, then its verdict
+        # line. raw_decode stops at the end of the object instead of guessing
+        # where it ends.
+        start = judge.stdout.find("\n{")
+        if start == -1:
+            sys.stdout.write(judge.stdout)
             sys.stderr.write(judge.stderr)
             print("metrics.py did not produce a verdict", file=sys.stderr)
             return judge.returncode or 1
+        sys.stdout.write(judge.stdout[:start])
+        verdict, _ = json.JSONDecoder().raw_decode(judge.stdout[start + 1:])
 
     manifest = json.loads((args.out / "manifest.json").read_text())
     result = {
