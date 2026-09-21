@@ -46,10 +46,18 @@ def git(*args: str) -> str:
 
 def git_commit() -> tuple[str, bool]:
     """Returns (sha, dirty). Untracked files count as dirty: an untracked
-    source file can change what gets built."""
+    source file can change what gets built.
+
+    Results are the exception. They are this script's own output, they cannot
+    change what was built or measured, and counting them would mark every run
+    after the first of a session dirty -- including the second half of a
+    before/after pair, which is exactly when it matters most.
+    """
     sha = git("rev-parse", "HEAD")
     status = git("status", "--porcelain")
-    return sha, bool(status)
+    lines = [line for line in status.splitlines()
+             if not line[3:].lstrip('"').startswith("bench/results/")]
+    return sha, bool(lines)
 
 
 def cmake_build_type(cache: Path) -> str:
