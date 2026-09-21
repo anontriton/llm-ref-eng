@@ -30,6 +30,7 @@
 #include "gpt2/backend/backend.h"
 #include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
+#include "gpt2/threading.h"
 #include "gpt2/runs.h"
 #include "gpt2/weights.h"
 
@@ -58,6 +59,7 @@ int main(int argc, char** argv) {
   int generate = 128;
   int prefill_repeat = 3;
   bool kv_cache = false;
+  int threads = 1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -73,13 +75,14 @@ int main(int argc, char** argv) {
     else if (arg == "--run") run_name = next("--run");
     else if (arg == "--generate") generate = std::stoi(next("--generate"));
     else if (arg == "--kv-cache") kv_cache = true;
+    else if (arg == "--threads") threads = std::stoi(next("--threads"));
     else if (arg == "--prefill-repeat") {
       prefill_repeat = std::stoi(next("--prefill-repeat"));
     } else if (arg == "-h" || arg == "--help") {
       std::fprintf(stderr,
                    "usage: %s [--weights FILE] [--prompts FILE] [--run NAME]\n"
                    "          [--generate N] [--prefill-repeat N] "
-                   "[--kv-cache]\n"
+                   "[--kv-cache] [--threads N]\n"
                    "Prints one JSON object of timings on stdout; progress on "
                    "stderr.\n", argv[0]);
       return 0;
@@ -99,6 +102,7 @@ int main(int argc, char** argv) {
   }
 
   try {
+    gpt2::threads::set_count(threads);
     const std::vector<gpt2::Run> runs = gpt2::load_runs(prompts_path);
     const gpt2::Run* run = nullptr;
     if (run_name.empty()) {
@@ -186,6 +190,7 @@ int main(int argc, char** argv) {
 
     std::printf("{\n");
     std::printf("  \"backend\": \"%s\",\n", gpt2::backend::name());
+    std::printf("  \"threads\": %d,\n", gpt2::threads::count());
     std::printf("  \"run\": \"%s\",\n", run->name.c_str());
     std::printf("  \"prompt_tokens\": %d,\n", prompt_tokens);
     std::printf("  \"generate\": %d,\n", generate);

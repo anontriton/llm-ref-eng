@@ -23,6 +23,7 @@
 
 #include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
+#include "gpt2/threading.h"
 #include "gpt2/runs.h"
 #include "gpt2/weights.h"
 
@@ -32,6 +33,7 @@ int main(int argc, char** argv) {
   std::string run_name;
   int steps = 50;
   bool kv_cache = false;
+  int threads = 1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -47,10 +49,11 @@ int main(int argc, char** argv) {
     else if (arg == "--run") run_name = next("--run");
     else if (arg == "--steps") steps = std::stoi(next("--steps"));
     else if (arg == "--kv-cache") kv_cache = true;
+    else if (arg == "--threads") threads = std::stoi(next("--threads"));
     else if (arg == "-h" || arg == "--help") {
       std::fprintf(stderr,
                    "usage: %s [--weights FILE] [--runs FILE] --run NAME "
-                   "[--steps N] [--kv-cache]\n"
+                   "[--steps N] [--kv-cache] [--threads N]\n"
                    "Prints JSON: the prompt ids and the ids greedily decoded "
                    "after them.\n", argv[0]);
       return 0;
@@ -61,6 +64,7 @@ int main(int argc, char** argv) {
   }
 
   try {
+    gpt2::threads::set_count(threads);
     const std::vector<gpt2::Run> runs = gpt2::load_runs(runs_path);
     const gpt2::Run* run = nullptr;
     if (run_name.empty()) {

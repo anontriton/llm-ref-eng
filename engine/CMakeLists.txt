@@ -41,9 +41,12 @@ endif()
 
 message(STATUS "gpt2: backend ${GPT2_BACKEND}")
 
+find_package(Threads REQUIRED)
+
 if(GPT2_SOURCES)
   add_library(gpt2 ${GPT2_SOURCES})
   target_include_directories(gpt2 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  target_link_libraries(gpt2 PUBLIC Threads::Threads)
 
   add_subdirectory(tools)
 

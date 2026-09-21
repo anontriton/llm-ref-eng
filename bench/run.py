@@ -95,7 +95,9 @@ def main() -> int:
     parser.add_argument("--run", default="", help="prompt name (default: first)")
     parser.add_argument("--generate", type=int, default=128)
     parser.add_argument("--prefill-repeat", type=int, default=3)
-    parser.add_argument("--threads", type=int, default=1)
+    parser.add_argument("--threads", type=int, default=1,
+                        help="worker threads, including the calling one; "
+                             "results must not depend on this")
     parser.add_argument("--kv-cache", action="store_true",
                         help="decode through the engine's KV cache")
     parser.add_argument("--label", default="",
@@ -119,7 +121,8 @@ def main() -> int:
            "--weights", str(args.weights),
            "--prompts", str(args.prompts),
            "--generate", str(args.generate),
-           "--prefill-repeat", str(args.prefill_repeat)]
+           "--prefill-repeat", str(args.prefill_repeat),
+           "--threads", str(args.threads)]
     if args.kv_cache:
         cmd += ["--kv-cache"]
     if args.run:
@@ -144,7 +147,7 @@ def main() -> int:
             # Both reported by the binary itself. A benchmark that had to be
             # told which backend it was running would eventually be told wrong.
             "backend": measured["backend"],
-            "threads": args.threads,
+            "threads": measured["threads"],
             "dtype": "fp32",
             # Taken from the tool's own report rather than from the flag, so
             # the record says what actually ran.
@@ -186,6 +189,8 @@ def main() -> int:
 
     stamp = started.strftime("%Y%m%dT%H%M%SZ")
     parts = [stamp, sha[:7], measured["backend"]]
+    if measured["threads"] > 1:
+        parts.append(f"t{measured['threads']}")
     # In the name, because a cached and an uncached run at the same commit are
     # not the same measurement and should not look alike in a directory
     # listing.

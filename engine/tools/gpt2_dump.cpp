@@ -17,6 +17,7 @@
 
 #include "gpt2/dump.h"
 #include "gpt2/kv_cache.h"
+#include "gpt2/threading.h"
 #include "gpt2/model.h"
 #include "gpt2/runs.h"
 #include "gpt2/weights.h"
@@ -45,6 +46,7 @@ int main(int argc, char** argv) {
   std::vector<std::string> only;
   bool quiet = false;
   bool kv_cache = false;
+  int threads = 1;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -61,6 +63,7 @@ int main(int argc, char** argv) {
     else if (arg == "--run") only.push_back(next("--run"));
     else if (arg == "--quiet") quiet = true;
     else if (arg == "--kv-cache") kv_cache = true;
+    else if (arg == "--threads") threads = std::stoi(next("--threads"));
     else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
     else {
       std::fprintf(stderr, "%s: unknown argument %s\n", argv[0], arg.c_str());
@@ -70,6 +73,7 @@ int main(int argc, char** argv) {
   }
 
   try {
+    gpt2::threads::set_count(threads);
     if (!quiet) std::cout << "loading " << weights_path << std::endl;
     const gpt2::Weights weights = gpt2::Weights::load(weights_path);
     const gpt2::Config& cfg = weights.config();

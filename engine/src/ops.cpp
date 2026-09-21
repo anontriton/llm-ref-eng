@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "gpt2/backend/backend.h"
+#include "gpt2/threading.h"
 
 namespace gpt2::ops {
 
@@ -98,6 +99,32 @@ constexpr int kMinTiledRows = 4;
 // inside a typical L2 alongside x and the output.
 constexpr size_t kStripBytes = 512 * 1024;
 
+// Grow the merge stack to hold `need` floats at this level. The buffers live
+// in thread-local storage and are reused across calls, so a parallel linear()
+// does not allocate per tile; sizes differ between call sites, hence the grow.
+Partial& level(std::vector<Partial>& stack, size_t depth, size_t need) {
+  if (depth == stack.size()) stack.emplace_back();
+  Partial& p = stack[depth];
+  if (p.acc.size() < need) p.acc.resize(need);
+  return p;
+}
+
+// How many column chunks to cut the output into.
+//
+// One, whenever there are already enough row blocks to keep every thread busy:
+// a column chunk reads W with a stride, which is the pattern that measured
+// slower before blocking, so it is a last resort rather than a default. It
+// exists for decode, which is a single row and therefore a single row block --
+// without it, decode would have no parallelism at all.
+int column_chunks(int rows, int block, int n_out, int workers) {
+  if (workers <= 1) return 1;
+  const int blocks = (rows + block - 1) / block;
+  if (blocks >= workers) return 1;
+  int chunks = (workers + blocks - 1) / blocks;
+  chunks = std::min(chunks, n_out / 8);
+  return std::max(chunks, 1);
+}
+
 int strip_width(int n_in, int n_out, int rows) {
   if (rows < kMinTiledRows) return n_out;
   const size_t per_column = static_cast<size_t>(n_in) * sizeof(float);
@@ -111,34 +138,42 @@ int strip_width(int n_in, int n_out, int rows) {
 
 void linear(const float* x, const float* W, const float* bias, float* out,
             int rows, int n_in, int n_out) {
-  std::vector<Partial> stack;
   // One row at a time reproduces the original loop exactly, which is what
   // decode gets.
   const int block = std::min(kRowBlock, rows);
+  const int blocks = (rows + block - 1) / block;
+  const int chunks = column_chunks(rows, block, n_out, threads::count());
+  const int per_chunk = chunks > 1 ? ((n_out / chunks) / 8) * 8 : n_out;
 
-  for (int r0 = 0; r0 < rows; r0 += block) {
+  // One tile of the output: rows [r0, r0+rb) by columns [c0, c1). Tiles are
+  // disjoint and share nothing, so running them on different threads cannot
+  // change a single bit of the answer -- and at one chunk and one thread this
+  // is the serial loop it replaced, unchanged.
+  const auto tile = [&](int index) {
+    const int b = index / chunks;
+    const int c = index % chunks;
+    const int r0 = b * block;
     const int rb = std::min(block, rows - r0);
-    const size_t span = static_cast<size_t>(rb) * n_out;
+    const int c0 = c * per_chunk;
+    const int c1 = (c == chunks - 1) ? n_out : (c0 + per_chunk);
+    const size_t width = static_cast<size_t>(c1 - c0);
+    const size_t span = static_cast<size_t>(rb) * width;
 
-    size_t depth = 0;  // live entries in `stack`; buffers are reused
+    static thread_local std::vector<Partial> stack;
+    size_t depth = 0;
 
     for (int i0 = 0; i0 < n_in; i0 += kLeaf) {
       const int i1 = std::min(i0 + kLeaf, n_in);
 
-      if (depth == stack.size()) {
-        stack.push_back(
-            Partial{std::vector<float>(static_cast<size_t>(block) * n_out), 0});
-      }
-      Partial& leaf = stack[depth];
+      Partial& leaf = level(stack, depth, static_cast<size_t>(block) * width);
       std::fill(leaf.acc.begin(), leaf.acc.begin() + span, 0.0f);
       // W's row for input i is read once and spent across every row in the
       // block, instead of being re-read for each row of x.
       for (int i = i0; i < i1; ++i) {
-        const float* wrow = W + static_cast<size_t>(i) * n_out;
+        const float* wrow = W + static_cast<size_t>(i) * n_out + c0;
         for (int rr = 0; rr < rb; ++rr) {
           backend::axpy(x[static_cast<size_t>(r0 + rr) * n_in + i], wrow,
-                        leaf.acc.data() + static_cast<size_t>(rr) * n_out,
-                        static_cast<size_t>(n_out));
+                        leaf.acc.data() + static_cast<size_t>(rr) * width, width);
         }
       }
       leaf.leaves = 1;
@@ -161,15 +196,17 @@ void linear(const float* x, const float* W, const float* bias, float* out,
     }
 
     for (int rr = 0; rr < rb; ++rr) {
-      float* orow = out + static_cast<size_t>(r0 + rr) * n_out;
-      const float* acc = stack[0].acc.data() + static_cast<size_t>(rr) * n_out;
+      float* orow = out + static_cast<size_t>(r0 + rr) * n_out + c0;
+      const float* acc = stack[0].acc.data() + static_cast<size_t>(rr) * width;
       if (bias != nullptr) {
-        for (int j = 0; j < n_out; ++j) orow[j] = acc[j] + bias[j];
+        for (size_t j = 0; j < width; ++j) orow[j] = acc[j] + bias[c0 + j];
       } else {
-        for (int j = 0; j < n_out; ++j) orow[j] = acc[j];
+        for (size_t j = 0; j < width; ++j) orow[j] = acc[j];
       }
     }
-  }
+  };
+
+  threads::parallel_for(blocks * chunks, tile);
 }
 
 void linear_tied(const float* x, const float* Wt, float* out,
@@ -179,8 +216,12 @@ void linear_tied(const float* x, const float* Wt, float* out,
   // and trivially exact here -- each output element is still one dot product
   // over the same span; only the order the elements are visited in changes.
   const int strip = strip_width(n_in, n_out, rows);
+  const int strips = (n_out + strip - 1) / strip;
 
-  for (int j0 = 0; j0 < n_out; j0 += strip) {
+  // Each strip owns a disjoint set of output columns, which is already the
+  // unit of parallelism; lm_head cuts into 300 of them.
+  threads::parallel_for(strips, [&](int s) {
+    const int j0 = s * strip;
     const int j1 = std::min(j0 + strip, n_out);
 
     for (int r = 0; r < rows; ++r) {
@@ -191,7 +232,7 @@ void linear_tied(const float* x, const float* Wt, float* out,
                                static_cast<size_t>(n_in));
       }
     }
-  }
+  });
 }
 
 void gelu_new(const float* x, float* out, size_t n) {
