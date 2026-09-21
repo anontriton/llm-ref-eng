@@ -190,6 +190,10 @@ int main(int argc, char** argv) {
 
     std::printf("{\n");
     std::printf("  \"backend\": \"%s\",\n", gpt2::backend::name());
+    // Off the weight file's header, not a flag: a benchmark that has to be
+    // told what precision it ran will eventually be told wrong, and an int8
+    // number filed as fp32 is worse than no number.
+    std::printf("  \"policy\": \"%s\",\n", weights.policy());
     std::printf("  \"threads\": %d,\n", gpt2::threads::count());
     std::printf("  \"run\": \"%s\",\n", run->name.c_str());
     std::printf("  \"prompt_tokens\": %d,\n", prompt_tokens);

@@ -148,7 +148,7 @@ def main() -> int:
             # told which backend it was running would eventually be told wrong.
             "backend": measured["backend"],
             "threads": measured["threads"],
-            "dtype": "fp32",
+            "dtype": measured["policy"],
             # Taken from the tool's own report rather than from the flag, so
             # the record says what actually ran.
             "kv_cache": measured["kv_cache"],
@@ -195,6 +195,8 @@ def main() -> int:
     # not the same measurement and should not look alike in a directory
     # listing.
     parts.append("kv" if measured["kv_cache"] else "nokv")
+    if measured["policy"] != "fp32":
+        parts.append(measured["policy"])
     if args.label:
         parts.append(args.label)
     if dirty:
