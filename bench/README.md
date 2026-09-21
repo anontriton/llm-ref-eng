@@ -77,6 +77,14 @@ cache, so the cached path was continuing from a prompt with a duplicated final
 token. Every timing in that run was valid; the program being timed was not the
 one it was being compared to. Nothing else in the harness would have noticed.
 
+Under a quantized policy the tripwire means something different, and weaker.
+int8 decodes 80 of 128 ids the same as fp32, and that is correct behaviour
+rather than breakage -- the engine is a different function now, not a broken
+one. `config.dtype` says which reading applies: for fp32 runs a difference
+still means something changed that should not have; for quantized runs the
+authority is `eval/metrics.py`, and the ids are only a record of what was
+generated.
+
 Comparisons are only valid between results that agree on `commit`-adjacent
 context: `config`, `prompt.tokens`, and `prompt.generate`. Changing
 `--generate` changes `decode_ms_per_token`, because without a KV cache the
