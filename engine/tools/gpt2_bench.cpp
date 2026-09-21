@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "gpt2/backend/backend.h"
 #include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
 #include "gpt2/runs.h"
@@ -184,6 +185,7 @@ int main(int argc, char** argv) {
     const double tokens_per_sec = generate / ((prefill_ms + decode_ms) / 1000.0);
 
     std::printf("{\n");
+    std::printf("  \"backend\": \"%s\",\n", gpt2::backend::name());
     std::printf("  \"run\": \"%s\",\n", run->name.c_str());
     std::printf("  \"prompt_tokens\": %d,\n", prompt_tokens);
     std::printf("  \"generate\": %d,\n", generate);

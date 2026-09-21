@@ -35,3 +35,4 @@ venv/
 *.swp
 .idea/
 .vscode/
+engine/build-*/

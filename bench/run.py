@@ -4,6 +4,11 @@
     python bench/run.py                      # -> bench/results/<stamp>-<sha>-scalar.json
     python bench/run.py --generate 32        # a cheaper run
     python bench/run.py --no-write           # print, record nothing
+    python bench/run.py --tool engine/build-avx2/tools/gpt2_bench
+
+The backend and build type are read from the binary and from the CMake cache
+beside it, not passed in, so a result cannot claim a backend it was not built
+with.
 
 engine/tools/gpt2_bench measures; this adds the provenance that makes a number
 mean something -- which commit produced it, on which machine, with which build.
@@ -34,7 +39,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TOOL = ROOT / "engine" / "build" / "tools" / "gpt2_bench"
 DEFAULT_PROMPTS = ROOT / "bench" / "prompts.tsv"
 DEFAULT_WEIGHTS = ROOT / "weights" / "gpt2-124m.bin"
-DEFAULT_CACHE = ROOT / "engine" / "build" / "CMakeCache.txt"
 RESULTS = ROOT / "bench" / "results"
 
 
@@ -60,7 +64,11 @@ def git_commit() -> tuple[str, bool]:
     return sha, bool(lines)
 
 
-def cmake_build_type(cache: Path) -> str:
+def cmake_build_type(tool: Path) -> str:
+    """Read the build type out of the CMake cache beside the tool, so pointing
+    --tool at a second build directory reports that build rather than the
+    default one."""
+    cache = tool.parent.parent / "CMakeCache.txt"
     if not cache.is_file():
         return "unknown"
     m = re.search(r"^CMAKE_BUILD_TYPE:STRING=(.*)$", cache.read_text(),
@@ -87,11 +95,6 @@ def main() -> int:
     parser.add_argument("--run", default="", help="prompt name (default: first)")
     parser.add_argument("--generate", type=int, default=128)
     parser.add_argument("--prefill-repeat", type=int, default=3)
-    parser.add_argument("--backend", default="scalar",
-                        choices=["scalar", "avx2", "wasm_simd128"],
-                        help="declares which backend the binary was built "
-                             "with; there is no build-level switch yet, so "
-                             "this is an assertion, not a detection")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--kv-cache", action="store_true",
                         help="decode through the engine's KV cache")
@@ -137,8 +140,10 @@ def main() -> int:
         "dirty": dirty,
         "timestamp": started.isoformat().replace("+00:00", "Z"),
         "config": {
-            "build": cmake_build_type(DEFAULT_CACHE),
-            "backend": args.backend,
+            "build": cmake_build_type(args.tool),
+            # Both reported by the binary itself. A benchmark that had to be
+            # told which backend it was running would eventually be told wrong.
+            "backend": measured["backend"],
             "threads": args.threads,
             "dtype": "fp32",
             # Taken from the tool's own report rather than from the flag, so
@@ -180,7 +185,7 @@ def main() -> int:
         return 0
 
     stamp = started.strftime("%Y%m%dT%H%M%SZ")
-    parts = [stamp, sha[:7], args.backend]
+    parts = [stamp, sha[:7], measured["backend"]]
     # In the name, because a cached and an uncached run at the same commit are
     # not the same measurement and should not look alike in a directory
     # listing.
