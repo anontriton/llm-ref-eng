@@ -41,10 +41,15 @@ summation order -- not a correctness property. Revised in Phase 2 on evidence;
 see the Phase 2 note below.
 
 ## Tolerance policy (quantized phases)
-Layer-wise matching is void. Use instead:
+Layer-wise matching is void. `oracle/compare.py` refuses a non-fp32 policy
+outright; `eval/metrics.py` is the authority instead. Use:
 - Perplexity on a fixed WikiText-2 slice
 - Top-1 agreement rate vs the fp32 engine
 - KL divergence of logits vs fp32
+- Decisive disagreement: added in Phase 4, because a raw agreement rate scores
+  a coin-flip between two equally likely tokens the same as overwriting a
+  confident answer. A flip counts only when fp32 preferred its own pick by more
+  than 0.05 probability.
 
 ## Phase order
 0 foundations -> 1 oracle -> 2 correct C++ -> 3 perf (KV cache, then blocked
@@ -65,11 +70,14 @@ Commit to bench/results/. Built BEFORE optimization starts.
 - `engine/` - C++ engine (`src/`, `include/gpt2/`, `tests/`)
 - `oracle/` - dumped reference activations + manifest + `compare.py`
 - `bench/` - benchmark harness + `results/` (committed JSON, commit-tagged)
+- `eval/` - quantized-phase harness: pinned corpus, `metrics.py`, `results/`
 - `web/` - Emscripten build + demo page
 - `scripts/` - weight download, format conversion
 
 Generated artifacts (weights, `.npy` activation dumps, build dirs) are
-gitignored. `bench/results/*.json` is the one generated thing that IS committed.
+gitignored. The committed exceptions are `bench/results/*.json` and
+`eval/results/*.json`, both commit-tagged, plus the pinned inputs they depend
+on: `bench/prompts.tsv` and `eval/corpus.tsv`.
 
 ## Oracle contract
 The oracle is a directory of `.npy` tensors plus `oracle/manifest.json`

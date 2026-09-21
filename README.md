@@ -12,6 +12,7 @@ order. Each directory has its own README describing what lives there.
     engine/      C++ engine (src/, include/gpt2/, tests/, tools/)
     oracle/      dumped reference activations + manifest + compare.py
     bench/       benchmark harness + committed, commit-tagged results
+    eval/        quantized-phase harness: pinned corpus, metrics, results
     web/         Emscripten build + demo page
     scripts/     weight download, format conversion
 
@@ -22,8 +23,8 @@ order. Each directory has its own README describing what lives there.
 | 0 foundations | done | `reference/validate_hf.py` |
 | 1 oracle | done | `oracle/test_compare.py` |
 | 2 correct C++ | done | `oracle/compare.py`, `oracle/check_greedy.py`, `ctest` |
-| 3 perf | next | KV cache, then blocked GEMM, then AVX2, then threads |
-| 4 quantization | -- | |
+| 3 perf | done | `bench/results/`, oracle re-run per commit |
+| 4 quantization | in progress | `eval/metrics.py`, `eval/results/` -- int8 done, int4 next |
 | 5 WASM | -- | |
 | 6 docs | -- | |
 
@@ -44,6 +45,20 @@ From the repo root, with the `.venv` described in CLAUDE.md:
     engine/build/tools/gpt2_dump
     .venv/bin/python oracle/compare.py engine/dumps/manifest.json
     .venv/bin/python oracle/check_greedy.py                # ~3 min, no KV cache yet
+
+    # Phase 3: the AVX2 build, and the benchmark
+    cmake -S engine -B engine/build-avx2 -G Ninja -DGPT2_BACKEND=avx2
+    cmake --build engine/build-avx2 -j
+    .venv/bin/python bench/run.py --kv-cache --threads 8 \
+        --tool engine/build-avx2/tools/gpt2_bench
+
+    # Phase 4: quantize, then judge against the fp32 engine
+    .venv/bin/python scripts/export_eval_corpus.py         # needs the network, once
+    .venv/bin/python eval/run.py --out eval/runs/fp32
+    .venv/bin/python eval/validate_ppl.py eval/runs/fp32   # harness vs PyTorch
+    .venv/bin/python scripts/quantize_weights.py
+    .venv/bin/python eval/run.py --out eval/runs/int8 \
+        --weights weights/gpt2-124m-int8.bin --reference eval/runs/fp32
 
 ## Results
 
@@ -74,10 +89,44 @@ policies.
 
 Scalar backend, single thread: all 5 oracle runs dump in about 16 s.
 
+### Phase 3 -- performance
+
+Four optimizations in the order CLAUDE.md fixes, each oracle-validated, each
+leaving a committed benchmark. At T = 128 prompt / 128 generated:
+
+| Step | prefill | decode/token | tokens/sec |
+|---|---|---|---|
+| baseline (scalar, no cache) | 5784 ms | 8781.5 ms | 0.114 |
+| + KV cache | 5825 ms | 48.5 ms | 10.68 |
+| + blocked GEMM | 4561 ms | 47.5 ms | 12.09 |
+| + AVX2 | 1573 ms | 29.7 ms | 23.94 |
+| + threads (8) | **493 ms** | **19.8 ms** | **42.55** |
+
+373x end to end; 443x on decode; 12x on prefill. Every step is bit-identical to
+the one before it -- verified by diffing engine dumps against engine dumps, not
+argued from tolerance -- so the engine still sits at 52.0% of its fp32 budget
+against PyTorch, the figure it has carried since Phase 2.
+
+### Phase 4 -- int8
+
+Weight-only, symmetric, per output channel. `wte` stays fp32; the twelve
+layers' projections quantize. 497.8 MB to 243.3 MB.
+
+| Metric | Result | Limit |
+|---|---|---|
+| Perplexity | 36.2798 vs 36.3366 (x0.99844) | <= x1.02 |
+| Top-1 agreement | 97.480% (3985/4088) | >= 97% |
+| Mean KL | 0.001168 nats | <= 0.01 |
+| p99 KL | 0.006155 nats | <= 0.05 |
+| Decisive disagreement | 0.000% (0 of 256) | <= 0.5% |
+
+Speed, avx2, 8 threads: prefill 484 to 450 ms, decode 19.73 to 17.15 ms/token,
+1.14x end to end.
+
 ## Findings
 
-These came out of Phase 2 and changed the project, so they are recorded here
-rather than only in commit history.
+These came out of the phases named and changed the project, so they are
+recorded here rather than only in commit history.
 
 ### 1. The original tolerance rule could not be met in fp32
 
@@ -183,11 +232,55 @@ reason: no SIMD backend would reproduce it, so Phase 3 would regress on day one.
   dump manifest can prove which weights it ran on without ever reading the
   original safetensors.
 
-## Known limits going into Phase 3
+### 5. One tensor carried all of int8's damage
 
-- No KV cache: `gpt2_generate` re-runs the full prefix every step, so the
-  50-step greedy check takes about 3 minutes. It is also the baseline the cache
-  will be validated against.
+Per-channel int8 on the twelve layers' projections costs nothing measurable.
+Quantizing `wte` as well is what hurts, and only one of the four metrics
+noticed:
+
+| Config | Perplexity | Top-1 | Mean KL | Size |
+|---|---|---|---|---|
+| int8, `wte` fp32 | x0.99844 | 97.48% | 0.00117 | 243.3 MB |
+| int8, `wte` int8 | x1.01536 | 83.02% | 0.04139 | 127.7 MB |
+
+Seventeen percent of argmaxes change and the distribution moves 35x further,
+for 1.9x more compression -- and **perplexity would have waved it through** at
++1.54%. That is the argument for measuring more than one thing. `wte` is the
+input embedding and the tied lm_head at once, so its error enters at the bottom
+of the stack and again at the top.
+
+Per-tensor scales were disqualified before any of this: 42.30 perplexity
+against 36.34, because one scale for a whole matrix is set by that matrix's
+worst outlier.
+
+### 6. int8 collected less speed than Phase 3 left available
+
+1.14x end to end, against 2.06x less weight traffic. Prefill barely moves
+because blocked GEMM already made it compute-bound -- once weights stream once
+instead of once per row, making them smaller stops mattering, and int8 adds a
+widening instruction per lane. Decode is where it helps, and the ceiling says
+why it does not help more:
+
+| Config | traffic/token | decode | implied bandwidth |
+|---|---|---|---|
+| fp32 | 494.1 MB | 19.73 ms | 25.0 GB/s |
+| int8, `wte` fp32 | 239.3 MB | 17.15 ms | 14.0 GB/s |
+| int8, `wte` int8 | 123.5 MB | 12.66 ms | 9.8 GB/s |
+
+fp32 decode runs at about what this machine's memory will do. Every step down
+lands further below the limit, so saved bytes stop converting into saved time.
+Keeping `wte` in fp32 leaves it as 64% of what decode still streams.
+
+## Known limits going into int4
+
+- `Model::forward` computes logits for every position; prefill needs only the
+  last row, and lm_head is 31% of prefill's arithmetic. Narrowing it changes
+  the contract the oracle dumps are written against.
+- The generated-ids tripwire in `bench/results/` means something weaker under a
+  quantized policy: differing ids are expected, and `eval/metrics.py` is the
+  authority instead.
+- KL and decisive disagreement are computed on a strided sample, not every
+  position. Full logits for the slice would be 800 MB.
 - The tolerance rule lives in `compare.py`; the manifest records the numbers
   but not how they combine. Stamping the rule into the manifest would need the
   oracle regenerated.
