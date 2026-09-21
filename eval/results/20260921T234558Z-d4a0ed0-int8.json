@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "commit": "d4a0ed0d4528dafee3cdc18944a705bec49e3ad4",
+  "dirty": false,
+  "timestamp": "2026-09-21T23:45:58.451129Z",
+  "policy": "int8",
+  "backend": "avx2",
+  "threads": 8,
+  "corpus": {
+    "name": "wikitext2",
+    "description": "Salesforce/wikitext wikitext-2-raw-v1 test rows 0..399",
+    "ids_sha256": "ee3a04fd3318a7b1f6bb96eae88e8e33d4dce86be35ddf3ef831a32e36ba536d",
+    "n_tokens": 4096
+  },
+  "eval": {
+    "window": 512,
+    "windows": 8,
+    "predictions": 4088,
+    "kl_stride": 16,
+    "samples": 256
+  },
+  "metrics": {
+    "perplexity": 36.27978,
+    "mean_nll": 3.591260558
+  },
+  "vs_fp32": {
+    "policy": "int8",
+    "backend": "avx2",
+    "perplexity": 36.27977996496391,
+    "reference_perplexity": 36.33658843004391,
+    "perplexity_ratio": 0.9984366043281864,
+    "top1_agreement": 0.9748043052837574,
+    "mean_kl": 0.0011675098882879546,
+    "p99_kl": 0.006154865388185578,
+    "max_kl": 0.015311098942158248,
+    "decisive_rate": 0.0,
+    "flipped_median_margin": 0.0009326824827513847,
+    "tolerance": {
+      "max_ppl_ratio": 1.02,
+      "min_top1_agreement": 0.97,
+      "max_mean_kl": 0.01,
+      "max_p99_kl": 0.05,
+      "decisive_margin": 0.05,
+      "max_decisive_rate": 0.005
+    },
+    "pass": true
+  },
+  "machine": {
+    "cpu": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+    "cores": 8
+  }
+}
