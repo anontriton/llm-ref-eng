@@ -31,9 +31,11 @@ backend lands.
   machine's real capability. Compute-bound on the matmuls; this is what blocked
   GEMM, AVX2, and threads go after.
 - **decode_ms_per_token** -- the mean cost of extending the sequence by one
-  token. Until the KV cache lands, every step re-runs the entire prefix through
-  the full forward pass, so this is enormous and grows with each step. That is
-  the honest baseline the cache gets measured against.
+  token, over `generate - 1` steps. The first token is not one of them: it
+  falls out of prefill, whose last row is already the distribution over what
+  follows the prompt. Without `--kv-cache` each step re-runs the entire prefix
+  through the full forward pass, so this is enormous and grows with each step;
+  with it, each step extends the sequence by one position.
 - **tokens_per_sec** -- end-to-end: `generate` tokens over the total time a
   caller waits, prefill included. The two numbers above break it down.
 
@@ -51,8 +53,8 @@ Every run emits one JSON file into `results/`, committed to the repo:
       "prompt":  { "name": "bench128", "tokens": 128, "generate": 128 },
       "metrics": { "tokens_per_sec": 0.0, "prefill_ms": 0.0,
                    "decode_ms_per_token": 0.0 },
-      "detail":  { "prefill_repeat": 3, "decode_total_ms": 0.0,
-                   "weights_load_ms": 0.0 },
+      "detail":  { "prefill_repeat": 3, "decode_steps": 127,
+                   "decode_total_ms": 0.0, "weights_load_ms": 0.0 },
       "output":  { "generated_ids": [ ... ] },
       "machine": { "cpu": "...", "cores": 8, "platform": "...",
                    "compiler": "..." }
@@ -67,6 +69,13 @@ changes what the engine decodes has changed the program, and the timings above
 are then measuring something other than the thing they are being compared to.
 It catches that without waiting for a full oracle run -- it does not replace
 one.
+
+It has already earned its place. The first cached benchmark decoded a sequence
+that matched the uncached one for 66 tokens and then diverged: the decode loop
+was re-feeding the last prompt token, which prefill had already put in the
+cache, so the cached path was continuing from a prompt with a duplicated final
+token. Every timing in that run was valid; the program being timed was not the
+one it was being compared to. Nothing else in the harness would have noticed.
 
 Comparisons are only valid between results that agree on `commit`-adjacent
 context: `config`, `prompt.tokens`, and `prompt.generate`. Changing

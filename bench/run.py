@@ -149,6 +149,7 @@ def main() -> int:
         },
         "detail": {
             "prefill_repeat": measured["prefill_repeat"],
+            "decode_steps": measured["decode_steps"],
             "decode_total_ms": measured["decode_total_ms"],
             "weights_load_ms": measured["weights_load_ms"],
         },

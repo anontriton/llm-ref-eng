@@ -88,8 +88,11 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (generate < 1 || prefill_repeat < 1) {
-    std::fprintf(stderr, "%s: --generate and --prefill-repeat must be >= 1\n",
+  // Two, not one: the first token comes out of prefill, so a decode rate needs
+  // at least one step after it.
+  if (generate < 2 || prefill_repeat < 1) {
+    std::fprintf(stderr,
+                 "%s: --generate must be >= 2 and --prefill-repeat >= 1\n",
                  argv[0]);
     return 2;
   }
@@ -122,17 +125,18 @@ int main(int argc, char** argv) {
     // repeat count of 1 measures something systematically slower.
     gpt2::KVCache cache(weights.config());
     double prefill_ms = 0.0;
+    std::vector<float> prefill_logits;
     for (int r = 0; r < prefill_repeat; ++r) {
       std::fprintf(stderr, "\r  prefill %d/%d ", r + 1, prefill_repeat);
       // Each repeat must start from an empty cache, or it would be measuring a
       // prefill that had already been done.
       cache.clear();
       const Clock::time_point t0 = Clock::now();
-      const std::vector<float> logits =
+      prefill_logits =
           kv_cache ? model.forward(prompt, cache) : model.forward(prompt);
       const double elapsed = ms_since(t0);
       // Keep the compiler from deciding the forward pass is dead code.
-      if (logits.empty()) throw std::runtime_error("empty logits");
+      if (prefill_logits.empty()) throw std::runtime_error("empty logits");
       if (r == 0 || elapsed < prefill_ms) prefill_ms = elapsed;
     }
 
@@ -142,30 +146,38 @@ int main(int argc, char** argv) {
     std::vector<int32_t> generated;
     generated.reserve(static_cast<size_t>(generate));
 
-    // The cache is left holding the prompt by the last prefill repeat, so
-    // decode picks up exactly where a real caller would.
-    std::vector<int32_t> pending;
+    // The first token falls out of prefill: the last row of those logits is
+    // the distribution over what follows the prompt. Taking it here is what
+    // keeps the two paths comparable. The cached path has already consumed the
+    // whole prompt, so feeding it any prompt token again would append a
+    // duplicate and decode a different sequence -- which is exactly what the
+    // generated ids caught when this loop got it wrong.
+    int next_id = argmax(
+        prefill_logits.data() +
+            static_cast<size_t>(prompt_tokens - 1) * vocab, vocab);
+    generated.push_back(next_id);
+    ids.push_back(next_id);
+
+    // One forward per remaining token, in both paths: the uncached one re-runs
+    // the whole sequence, the cached one extends it by a single position.
+    const int decode_steps = generate - 1;
     const Clock::time_point decode_t0 = Clock::now();
-    for (int s = 0; s < generate; ++s) {
-      std::fprintf(stderr, "\r  decode %d/%d  ", s + 1, generate);
+    for (int s = 0; s < decode_steps; ++s) {
+      std::fprintf(stderr, "\r  decode %d/%d  ", s + 1, decode_steps);
+      const std::vector<int32_t> step_ids{next_id};
       const std::vector<float> logits =
-          kv_cache ? model.forward(pending.empty()
-                                       ? std::vector<int32_t>{ids.back()}
-                                       : pending,
-                                   cache)
-                   : model.forward(ids);
+          kv_cache ? model.forward(step_ids, cache) : model.forward(ids);
       const size_t rows = kv_cache ? 1 : ids.size();
       const float* last =
           logits.data() + (rows - 1) * static_cast<size_t>(vocab);
-      const int next_id = argmax(last, vocab);
+      next_id = argmax(last, vocab);
       generated.push_back(next_id);
       ids.push_back(next_id);
-      pending.assign(1, next_id);
     }
     const double decode_ms = ms_since(decode_t0);
     std::fprintf(stderr, "\r%*s\r", 24, "");
 
-    const double decode_ms_per_token = decode_ms / generate;
+    const double decode_ms_per_token = decode_ms / decode_steps;
     // End-to-end throughput: the tokens a caller asked for, over the time they
     // waited for them. Prefill is in the denominator because the caller waits
     // for it; it is reported separately so the two can be told apart.
@@ -179,6 +191,7 @@ int main(int argc, char** argv) {
     std::printf("  \"kv_cache\": %s,\n", kv_cache ? "true" : "false");
     std::printf("  \"weights_load_ms\": %.3f,\n", load_ms);
     std::printf("  \"prefill_ms\": %.3f,\n", prefill_ms);
+    std::printf("  \"decode_steps\": %d,\n", decode_steps);
     std::printf("  \"decode_total_ms\": %.3f,\n", decode_ms);
     std::printf("  \"decode_ms_per_token\": %.3f,\n", decode_ms_per_token);
     std::printf("  \"tokens_per_sec\": %.6f,\n", tokens_per_sec);
