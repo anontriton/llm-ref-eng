@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "commit": "0cdbfd26c9c538bda6ca03adb273a8a8b3b5dc59",
+  "dirty": false,
+  "timestamp": "2026-09-21T23:31:43.441360Z",
+  "policy": "fp32",
+  "backend": "avx2",
+  "threads": 8,
+  "corpus": {
+    "name": "wikitext2",
+    "description": "Salesforce/wikitext wikitext-2-raw-v1 test rows 0..399",
+    "ids_sha256": "ee3a04fd3318a7b1f6bb96eae88e8e33d4dce86be35ddf3ef831a32e36ba536d",
+    "n_tokens": 4096
+  },
+  "eval": {
+    "window": 512,
+    "windows": 8,
+    "predictions": 4088,
+    "kl_stride": 16,
+    "samples": 256
+  },
+  "metrics": {
+    "perplexity": 36.336588,
+    "mean_nll": 3.592825181
+  },
+  "vs_fp32": null,
+  "machine": {
+    "cpu": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+    "cores": 8
+  }
+}
