@@ -86,7 +86,7 @@ def main() -> int:
                              "this is an assertion, not a detection")
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--kv-cache", action="store_true",
-                        help="set once the engine has one; recorded in config")
+                        help="decode through the engine's KV cache")
     parser.add_argument("--label", default="",
                         help="optional suffix for the result filename")
     parser.add_argument("--no-write", action="store_true",
@@ -109,6 +109,8 @@ def main() -> int:
            "--prompts", str(args.prompts),
            "--generate", str(args.generate),
            "--prefill-repeat", str(args.prefill_repeat)]
+    if args.kv_cache:
+        cmd += ["--kv-cache"]
     if args.run:
         cmd += ["--run", args.run]
 
@@ -131,7 +133,9 @@ def main() -> int:
             "backend": args.backend,
             "threads": args.threads,
             "dtype": "fp32",
-            "kv_cache": args.kv_cache,
+            # Taken from the tool's own report rather than from the flag, so
+            # the record says what actually ran.
+            "kv_cache": measured["kv_cache"],
         },
         "prompt": {
             "name": measured["run"],
@@ -168,6 +172,10 @@ def main() -> int:
 
     stamp = started.strftime("%Y%m%dT%H%M%SZ")
     parts = [stamp, sha[:7], args.backend]
+    # In the name, because a cached and an uncached run at the same commit are
+    # not the same measurement and should not look alike in a directory
+    # listing.
+    parts.append("kv" if measured["kv_cache"] else "nokv")
     if args.label:
         parts.append(args.label)
     if dirty:

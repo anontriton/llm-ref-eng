@@ -51,6 +51,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--steps", type=int, default=50)
     parser.add_argument("--run", default=None, help="run name (default: the first)")
+    parser.add_argument("--kv-cache", action="store_true",
+                        help="decode through the engine's KV cache; the "
+                             "reference is unchanged, so this asks whether "
+                             "the cached path still picks the same tokens")
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     parser.add_argument("--engine", type=Path, default=ENGINE)
     args = parser.parse_args()
@@ -60,6 +64,8 @@ def main() -> int:
         return 2
 
     cmd = [str(args.engine), "--steps", str(args.steps)]
+    if args.kv_cache:
+        cmd += ["--kv-cache"]
     if args.run:
         cmd += ["--run", args.run]
     print(f"engine    {' '.join(cmd)}")

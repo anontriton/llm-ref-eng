@@ -27,7 +27,13 @@ class Dumper {
 
   // Start a run. Creates its directory, removes stale .npy files, and returns
   // the tap to hand to Model::forward.
-  Tap begin(const Run& run);
+  //
+  // `kv_row` marks a dump produced through the KV cache, holding a single
+  // position's activations rather than the whole sequence's. It is the
+  // absolute position that row sits at, and the manifest carries it so
+  // oracle/compare.py knows to slice the reference at the same row instead of
+  // failing on the shape. -1 means an ordinary whole-sequence dump.
+  Tap begin(const Run& run, int kv_row = -1);
 
   // Seal the run started by begin().
   void end();
@@ -52,6 +58,7 @@ class Dumper {
 
   struct RunDump {
     Run run;
+    int kv_row = -1;
     std::vector<Record> tensors;
   };
 

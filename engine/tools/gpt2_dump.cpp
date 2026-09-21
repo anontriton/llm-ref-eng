@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "gpt2/dump.h"
+#include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
 #include "gpt2/runs.h"
 #include "gpt2/weights.h"
@@ -29,7 +30,9 @@ void usage(const char* argv0) {
                "  --weights  flat weight file   (default weights/gpt2-124m.bin)\n"
                "  --runs     run definitions    (default engine/runs.tsv)\n"
                "  --out      dump directory     (default engine/dumps)\n"
-               "  --run      only this run, repeatable\n",
+               "  --run      only this run, repeatable\n"
+      "  --kv-cache decode the last token through the KV cache and dump\n"
+      "             only that row (compare.py slices the reference)\n",
                argv0);
 }
 
@@ -41,6 +44,7 @@ int main(int argc, char** argv) {
   std::string out_dir = "engine/dumps";
   std::vector<std::string> only;
   bool quiet = false;
+  bool kv_cache = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -56,6 +60,7 @@ int main(int argc, char** argv) {
     else if (arg == "--out") out_dir = next("--out");
     else if (arg == "--run") only.push_back(next("--run"));
     else if (arg == "--quiet") quiet = true;
+    else if (arg == "--kv-cache") kv_cache = true;
     else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
     else {
       std::fprintf(stderr, "%s: unknown argument %s\n", argv[0], arg.c_str());
@@ -87,9 +92,32 @@ int main(int argc, char** argv) {
         continue;
       }
       const auto t0 = std::chrono::steady_clock::now();
-      const gpt2::Tap tap = dumper.begin(run);
-      model.forward(run.input_ids, tap);
-      dumper.end();
+      const int T = static_cast<int>(run.input_ids.size());
+      if (kv_cache) {
+        // Prefill everything but the last token untapped, then decode that
+        // last token through the cache and dump only what it produced.
+        //
+        // Causality is what makes this a fair comparison: position T-1 attends
+        // only to positions <= T-1, so its activations are identical whether
+        // the earlier tokens were processed alongside it or cached beforehand.
+        // The reference's whole-sequence dump therefore already contains the
+        // right answer, at row T-1 -- no second oracle needed.
+        gpt2::KVCache cache(cfg, T);
+        std::vector<int32_t> last = run.input_ids;
+        if (T > 1) {
+          const std::vector<int32_t> prefix(run.input_ids.begin(),
+                                            run.input_ids.end() - 1);
+          model.forward(prefix, cache);
+          last.assign(run.input_ids.end() - 1, run.input_ids.end());
+        }
+        const gpt2::Tap tap = dumper.begin(run, T - 1);
+        model.forward(last, cache, tap);
+        dumper.end();
+      } else {
+        const gpt2::Tap tap = dumper.begin(run);
+        model.forward(run.input_ids, tap);
+        dumper.end();
+      }
       const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::steady_clock::now() - t0).count();
       ++done;

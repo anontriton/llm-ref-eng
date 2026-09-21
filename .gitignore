@@ -8,6 +8,7 @@ weights/
 oracle/activations/**
 !oracle/activations/.gitkeep
 engine/dumps/
+engine/dumps_kv/
 
 # Run definitions, derived from oracle/manifest.json by scripts/export_runs.py
 engine/runs.tsv

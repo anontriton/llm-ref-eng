@@ -38,9 +38,9 @@ Dumper::Dumper(std::string out_dir, const Weights& weights)
   fs::create_directories(fs::path(out_dir_) / "activations");
 }
 
-Tap Dumper::begin(const Run& run) {
+Tap Dumper::begin(const Run& run, int kv_row) {
   if (open_) throw std::runtime_error("dump: previous run was not ended");
-  current_ = RunDump{run, {}};
+  current_ = RunDump{run, kv_row, {}};
   open_ = true;
 
   const fs::path dir = fs::path(out_dir_) / "activations" / run.name;
@@ -170,6 +170,9 @@ void Dumper::write_manifest() const {
     for (int32_t id : rd.run.input_ids) j.num(static_cast<long long>(id));
     j.end_array();
     j.kv("n_tokens", static_cast<long long>(rd.run.input_ids.size()));
+    // Present only on a cached dump: the absolute position these tensors
+    // hold. compare.py slices the reference at this row.
+    if (rd.kv_row >= 0) j.kv("kv_row", static_cast<long long>(rd.kv_row));
     j.kv("dir", "activations/" + rd.run.name);
     j.key("tensors");
     j.begin_array();

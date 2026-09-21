@@ -6,9 +6,14 @@
 // words -- which is a different claim, and the one that survives Phase 4 when
 // layer-wise matching is void.
 //
-// No KV cache: every step re-runs the full prefix through the same forward pass
-// the oracle validated. That is slow and deliberate; the cache arrives in
-// Phase 3, and it will have this output to prove itself against.
+// Two decode paths, selected by --kv-cache. Without it, every step re-runs the
+// full prefix through the forward pass the oracle validated -- slow, and the
+// definition of the right answer. With it, keys and values are retained and
+// each step processes one token.
+//
+// Both must produce the same ids. That equality is the cheapest proof the
+// cache is correct, and it is why the slow path stays reachable rather than
+// being replaced.
 #include <algorithm>
 #include <cstdio>
 #include <exception>
@@ -16,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
 #include "gpt2/runs.h"
 #include "gpt2/weights.h"
@@ -25,6 +31,7 @@ int main(int argc, char** argv) {
   std::string runs_path = "engine/runs.tsv";
   std::string run_name;
   int steps = 50;
+  bool kv_cache = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -39,10 +46,11 @@ int main(int argc, char** argv) {
     else if (arg == "--runs") runs_path = next("--runs");
     else if (arg == "--run") run_name = next("--run");
     else if (arg == "--steps") steps = std::stoi(next("--steps"));
+    else if (arg == "--kv-cache") kv_cache = true;
     else if (arg == "-h" || arg == "--help") {
       std::fprintf(stderr,
                    "usage: %s [--weights FILE] [--runs FILE] --run NAME "
-                   "[--steps N]\n"
+                   "[--steps N] [--kv-cache]\n"
                    "Prints JSON: the prompt ids and the ids greedily decoded "
                    "after them.\n", argv[0]);
       return 0;
@@ -72,16 +80,25 @@ int main(int argc, char** argv) {
     const size_t prompt_len = ids.size();
     std::vector<int32_t> generated;
 
+    gpt2::KVCache cache(weights.config());
+    std::vector<int32_t> pending = ids;  // what the next forward consumes
+
     for (int s = 0; s < steps; ++s) {
-      const std::vector<float> logits = model.forward(ids);
-      // Only the final position matters: it is the distribution over what
-      // comes next.
-      const float* last = logits.data() +
-                          (ids.size() - 1) * static_cast<size_t>(vocab);
+      // Cached: feed only what the cache has not seen -- the whole prompt on
+      // the first step, then one token at a time. Uncached: feed everything,
+      // every time.
+      const std::vector<float> logits =
+          kv_cache ? model.forward(pending, cache) : model.forward(ids);
+      // Only the final row matters: it is the distribution over what comes
+      // next. Uncached that row is position T-1 of the whole sequence; cached
+      // it is the last of the rows just appended. Same row either way.
+      const size_t rows = kv_cache ? pending.size() : ids.size();
+      const float* last = logits.data() + (rows - 1) * static_cast<size_t>(vocab);
       const int32_t next = static_cast<int32_t>(
           std::max_element(last, last + vocab) - last);
       generated.push_back(next);
       ids.push_back(next);
+      pending.assign(1, next);
       std::fprintf(stderr, "\r  step %d/%d", s + 1, steps);
     }
     std::fprintf(stderr, "\r%*s\r", 24, "");

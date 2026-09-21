@@ -123,6 +123,32 @@ def _wrong_tokens(manifest: dict, dest: Path) -> None:
     manifest["runs"][0]["input_ids"][0] += 1
 
 
+def _as_kv_row(row: int, *, hold: int | None = None):
+    """Rewrite the candidate as a KV-cached dump: one position, not T.
+
+    `hold` lets the dump declare row `row` while actually holding a different
+    one, which is how the reference-side slice gets proved to be anchored to
+    the declared position rather than trivially agreeing with whatever it is
+    handed.
+    """
+    def mutate(manifest: dict, dest: Path) -> None:
+        run = manifest["runs"][0]
+        run["kv_row"] = row
+        held = row if hold is None else hold
+        for record in run["tensors"]:
+            path = dest / run["dir"] / record["file"]
+            array = np.load(path)
+            # Positions live on axis 1 for activations, axis 2 (queries) for
+            # attention tensors -- the same rule compare.py slices by.
+            axis = 1 if array.ndim == 3 else 2
+            array = np.ascontiguousarray(np.take(array, [held], axis=axis),
+                                         dtype=np.float32)
+            np.save(path, array, allow_pickle=False)
+            record["shape"] = list(array.shape)
+            record["sha256"] = hashlib.sha256(array.tobytes()).hexdigest()
+    return mutate
+
+
 def _quantized_policy(manifest: dict, dest: Path) -> None:
     manifest["tolerance"]["policy"] = "int8"
 
@@ -190,6 +216,25 @@ CASES = [
     ("near-zero values are still held to max_abs",
      lambda m, d: rewrite(m, d, "block.5.attn.probs", _nudge_smallest(5e-4)),
      1, "first divergence at block.5.attn.probs"),
+
+    # A KV-cached dump holds one position where the reference holds T. The
+    # comparison stays real: it slices the reference to the declared row, and
+    # the next two cases pin both directions of that.
+    ("kv_row dump compares against the reference's matching row",
+     _as_kv_row(4), 0, "ORACLE COMPARISON PASSED"),
+
+    ("kv_row dump holding the wrong row is caught",
+     _as_kv_row(4, hold=0), 1, "first divergence at embed.out"),
+
+    # With one query row, the causal triangle cannot be read off the tensor's
+    # own shape: np.tril of a 1-by-T grid marks a single column and would
+    # excuse every other key the row actually attended to.
+    ("kv_row still checks the whole causal row of attn.scores",
+     lambda m, d: (_as_kv_row(4)(m, d),
+                   rewrite(m, d, "block.0.attn.scores",
+                           lambda a: a + np.array([0, 0, 0, 1e-2, 0],
+                                                  dtype=np.float32))),
+     1, "first divergence at block.0.attn.scores"),
 ]
 
 

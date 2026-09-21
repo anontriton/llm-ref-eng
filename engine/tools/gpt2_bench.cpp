@@ -10,10 +10,12 @@
 //
 //   prefill  -- one forward over the whole prompt. Compute-bound on the
 //               matmuls; what blocked GEMM, AVX2, and threads go after.
-//   decode   -- the per-token cost of extending the sequence. Today every step
-//               re-runs the entire prefix through the full forward pass, so
-//               this number is enormous and grows with each step. That is the
-//               honest baseline the KV cache is measured against.
+//   decode   -- the per-token cost of extending the sequence. Without
+//               --kv-cache every step re-runs the entire prefix through the
+//               full forward pass, so the number is enormous and grows with
+//               each step; with it, each step processes one token. Both paths
+//               stay reachable because the comparison between them is the
+//               point.
 //
 // The generated ids are printed too. They are not a benchmark metric; they are
 // a tripwire. An "optimization" that changes what the engine decodes shows up
@@ -25,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
 #include "gpt2/runs.h"
 #include "gpt2/weights.h"
@@ -53,6 +56,7 @@ int main(int argc, char** argv) {
   std::string run_name;
   int generate = 128;
   int prefill_repeat = 3;
+  bool kv_cache = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -67,12 +71,14 @@ int main(int argc, char** argv) {
     else if (arg == "--prompts") prompts_path = next("--prompts");
     else if (arg == "--run") run_name = next("--run");
     else if (arg == "--generate") generate = std::stoi(next("--generate"));
+    else if (arg == "--kv-cache") kv_cache = true;
     else if (arg == "--prefill-repeat") {
       prefill_repeat = std::stoi(next("--prefill-repeat"));
     } else if (arg == "-h" || arg == "--help") {
       std::fprintf(stderr,
                    "usage: %s [--weights FILE] [--prompts FILE] [--run NAME]\n"
-                   "          [--generate N] [--prefill-repeat N]\n"
+                   "          [--generate N] [--prefill-repeat N] "
+                   "[--kv-cache]\n"
                    "Prints one JSON object of timings on stdout; progress on "
                    "stderr.\n", argv[0]);
       return 0;
@@ -114,11 +120,16 @@ int main(int argc, char** argv) {
     // none removes it, so the fastest run is the closest to the machine's
     // actual capability. The first iteration also warms the weight pages, so a
     // repeat count of 1 measures something systematically slower.
+    gpt2::KVCache cache(weights.config());
     double prefill_ms = 0.0;
     for (int r = 0; r < prefill_repeat; ++r) {
       std::fprintf(stderr, "\r  prefill %d/%d ", r + 1, prefill_repeat);
+      // Each repeat must start from an empty cache, or it would be measuring a
+      // prefill that had already been done.
+      cache.clear();
       const Clock::time_point t0 = Clock::now();
-      const std::vector<float> logits = model.forward(prompt);
+      const std::vector<float> logits =
+          kv_cache ? model.forward(prompt, cache) : model.forward(prompt);
       const double elapsed = ms_since(t0);
       // Keep the compiler from deciding the forward pass is dead code.
       if (logits.empty()) throw std::runtime_error("empty logits");
@@ -131,15 +142,25 @@ int main(int argc, char** argv) {
     std::vector<int32_t> generated;
     generated.reserve(static_cast<size_t>(generate));
 
+    // The cache is left holding the prompt by the last prefill repeat, so
+    // decode picks up exactly where a real caller would.
+    std::vector<int32_t> pending;
     const Clock::time_point decode_t0 = Clock::now();
     for (int s = 0; s < generate; ++s) {
       std::fprintf(stderr, "\r  decode %d/%d  ", s + 1, generate);
-      const std::vector<float> logits = model.forward(ids);
+      const std::vector<float> logits =
+          kv_cache ? model.forward(pending.empty()
+                                       ? std::vector<int32_t>{ids.back()}
+                                       : pending,
+                                   cache)
+                   : model.forward(ids);
+      const size_t rows = kv_cache ? 1 : ids.size();
       const float* last =
-          logits.data() + (ids.size() - 1) * static_cast<size_t>(vocab);
+          logits.data() + (rows - 1) * static_cast<size_t>(vocab);
       const int next_id = argmax(last, vocab);
       generated.push_back(next_id);
       ids.push_back(next_id);
+      pending.assign(1, next_id);
     }
     const double decode_ms = ms_since(decode_t0);
     std::fprintf(stderr, "\r%*s\r", 24, "");
@@ -155,6 +176,7 @@ int main(int argc, char** argv) {
     std::printf("  \"prompt_tokens\": %d,\n", prompt_tokens);
     std::printf("  \"generate\": %d,\n", generate);
     std::printf("  \"prefill_repeat\": %d,\n", prefill_repeat);
+    std::printf("  \"kv_cache\": %s,\n", kv_cache ? "true" : "false");
     std::printf("  \"weights_load_ms\": %.3f,\n", load_ms);
     std::printf("  \"prefill_ms\": %.3f,\n", prefill_ms);
     std::printf("  \"decode_total_ms\": %.3f,\n", decode_ms);

@@ -76,23 +76,60 @@ def load_tensor(base: Path, run: dict, record: dict, verify_hash: bool) -> np.nd
 # comparison
 # --------------------------------------------------------------------------
 
-def region_mask(shape: tuple[int, ...], region: str | None) -> np.ndarray | None:
+def region_mask(shape: tuple[int, ...], region: str | None,
+                q_offset: int = 0) -> np.ndarray | None:
     """Which elements are in scope. None means all of them.
 
     'causal_lower_triangle' restricts attention scores to the part every
     implementation must actually compute; what an engine leaves in the masked
     upper triangle is its own business, and shows up in .probs regardless.
+
+    `q_offset` is the absolute position of the first query row. It is 0 for a
+    whole-sequence tensor, where this is exactly np.tril. It is not 0 for a
+    KV-cached dump, which holds one query row from partway along the sequence:
+    that row legitimately attends to every key up to its own position, so
+    deriving the triangle from the tensor's own shape would mark a single
+    column in scope and quietly excuse the other T-1.
     """
     if region is None:
         return None
     if region == "causal_lower_triangle":
         t_q, t_k = shape[-2], shape[-1]
-        return np.tril(np.ones((t_q, t_k), dtype=bool))
+        rows = np.arange(q_offset, q_offset + t_q)[:, None]
+        cols = np.arange(t_k)[None, :]
+        return cols <= rows
     raise ValueError(f"unknown region {region!r}")
 
 
+def slice_row(ref: np.ndarray, name: str, row: int) -> np.ndarray:
+    """Reduce a whole-sequence reference tensor to the single position `row`.
+
+    A KV-cached decode step computes one position, so it dumps [1, 1, C] where
+    the reference holds [1, T, C]. Comparing them is legitimate rather than a
+    convenience: attention is causal, so position `row` attends only to
+    positions <= row and its activations do not depend on whether later tokens
+    were present. The reference's row `row` is therefore exactly what the
+    cached step must produce, and the oracle already contains it.
+
+    Axis 1 carries positions for activations ([1, T, C]); attention tensors are
+    [1, H, T_q, T_k] and carry queries on axis 2. The key axis is left whole --
+    the cached step really does attend across all T keys.
+    """
+    if ref.ndim == 3:
+        axis = 1
+    elif ref.ndim == 4:
+        axis = 2
+    else:
+        raise ValueError(f"{name}: cannot take a position row from shape "
+                         f"{ref.shape}")
+    if not 0 <= row < ref.shape[axis]:
+        raise ValueError(f"{name}: kv_row {row} outside axis {axis} of "
+                         f"length {ref.shape[axis]}")
+    return np.take(ref, [row], axis=axis)
+
+
 def compare_tensor(ref: np.ndarray, cand: np.ndarray, tol: dict,
-                   region: str | None) -> dict:
+                   region: str | None, q_offset: int = 0) -> dict:
     """Return a verdict dict for one tensor pair."""
     result: dict = {"ok": True, "reason": None}
 
@@ -100,7 +137,7 @@ def compare_tensor(ref: np.ndarray, cand: np.ndarray, tol: dict,
         return {"ok": False, "reason":
                 f"shape {cand.shape} != reference {ref.shape}"}
 
-    mask = region_mask(ref.shape, region)
+    mask = region_mask(ref.shape, region, q_offset)
     if mask is not None:
         mask = np.broadcast_to(mask, ref.shape)
     else:
@@ -271,8 +308,13 @@ def main() -> int:
             continue
 
         cand_records = {r["name"]: r for r in cand_run["tensors"]}
-        print(f"\nrun {name}  (T={ref_run['n_tokens']}, "
-              f"{len(ref_run['tensors'])} tensors)")
+        kv_row = cand_run.get("kv_row")
+        if kv_row is None:
+            print(f"\nrun {name}  (T={ref_run['n_tokens']}, "
+                  f"{len(ref_run['tensors'])} tensors)")
+        else:
+            print(f"\nrun {name}  (T={ref_run['n_tokens']}, "
+                  f"{len(ref_run['tensors'])} tensors, KV-cached row {kv_row})")
 
         worst = None
         divergence = None
@@ -290,11 +332,14 @@ def main() -> int:
             try:
                 a = load_tensor(ref_base, ref_run, record, verify)
                 b = load_tensor(cand_base, cand_run, other, verify)
+                if kv_row is not None:
+                    a = slice_row(a, tname, kv_row)
             except (FileNotFoundError, ValueError) as exc:
                 divergence = (tname, {"ok": False, "reason": str(exc)})
                 break
 
-            verdict = compare_tensor(a, b, tol, record.get("region"))
+            verdict = compare_tensor(a, b, tol, record.get("region"),
+                                     q_offset=kv_row or 0)
             checked += 1
 
             if args.verbose:
