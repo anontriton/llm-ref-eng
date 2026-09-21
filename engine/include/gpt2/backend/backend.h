@@ -27,6 +27,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace gpt2::backend {
 
@@ -41,8 +42,18 @@ const char* name();
 // sum_i a[i] * b[i]
 float dot(const float* a, const float* b, size_t n);
 
+// sum_i a[i] * (float)q[i], with q widened exactly. Phase 4: the int8 weight
+// is converted to fp32 and then multiplied, so the accumulation is the same
+// arithmetic dot() does -- same lanes, same order, same two roundings. The
+// scale is applied once by the caller after the reduction, not per element,
+// which is both cheaper and closer to the true product.
+float dot_i8(const float* a, const int8_t* q, size_t n);
+
 // y[i] += alpha * x[i]
 void axpy(float alpha, const float* x, float* y, size_t n);
+
+// y[i] += alpha * (float)q[i]
+void axpy_i8(float alpha, const int8_t* q, float* y, size_t n);
 
 // sum_i x[i]
 float sum(const float* x, size_t n);

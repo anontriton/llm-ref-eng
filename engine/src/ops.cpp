@@ -136,7 +136,7 @@ int strip_width(int n_in, int n_out, int rows) {
 
 }  // namespace
 
-void linear(const float* x, const float* W, const float* bias, float* out,
+void linear(const float* x, const Matrix& W, const float* bias, float* out,
             int rows, int n_in, int n_out) {
   // One row at a time reproduces the original loop exactly, which is what
   // decode gets.
@@ -170,10 +170,15 @@ void linear(const float* x, const float* W, const float* bias, float* out,
       // W's row for input i is read once and spent across every row in the
       // block, instead of being re-read for each row of x.
       for (int i = i0; i < i1; ++i) {
-        const float* wrow = W + static_cast<size_t>(i) * n_out + c0;
+        const size_t off = static_cast<size_t>(i) * n_out + c0;
         for (int rr = 0; rr < rb; ++rr) {
-          backend::axpy(x[static_cast<size_t>(r0 + rr) * n_in + i], wrow,
-                        leaf.acc.data() + static_cast<size_t>(rr) * width, width);
+          const float a = x[static_cast<size_t>(r0 + rr) * n_in + i];
+          float* dst = leaf.acc.data() + static_cast<size_t>(rr) * width;
+          if (W.quantized()) {
+            backend::axpy_i8(a, W.i8 + off, dst, width);
+          } else {
+            backend::axpy(a, W.f32 + off, dst, width);
+          }
         }
       }
       leaf.leaves = 1;
@@ -195,10 +200,20 @@ void linear(const float* x, const float* W, const float* bias, float* out,
       backend::add(stack[k].acc.data(), stack[k - 1].acc.data(), span);
     }
 
+    // The int8 scale lands here, once per output element, after the whole
+    // reduction -- not folded into each product. One multiply instead of
+    // n_in of them, and one rounding instead of n_in.
+    const float* scale = W.quantized() ? W.scale + c0 : nullptr;
     for (int rr = 0; rr < rb; ++rr) {
       float* orow = out + static_cast<size_t>(r0 + rr) * n_out + c0;
       const float* acc = stack[0].acc.data() + static_cast<size_t>(rr) * width;
-      if (bias != nullptr) {
+      if (scale != nullptr) {
+        if (bias != nullptr) {
+          for (size_t j = 0; j < width; ++j) orow[j] = acc[j] * scale[j] + bias[c0 + j];
+        } else {
+          for (size_t j = 0; j < width; ++j) orow[j] = acc[j] * scale[j];
+        }
+      } else if (bias != nullptr) {
         for (size_t j = 0; j < width; ++j) orow[j] = acc[j] + bias[c0 + j];
       } else {
         for (size_t j = 0; j < width; ++j) orow[j] = acc[j];
@@ -209,7 +224,7 @@ void linear(const float* x, const float* W, const float* bias, float* out,
   threads::parallel_for(blocks * chunks, tile);
 }
 
-void linear_tied(const float* x, const float* Wt, float* out,
+void linear_tied(const float* x, const Matrix& Wt, float* out,
                  int rows, int n_in, int n_out) {
   // lm_head is the worst offender: Wt is the 50257 x 768 embedding table, 154
   // MB, and walking it once per row was 20 GB of traffic on its own. Same fix,
@@ -227,9 +242,16 @@ void linear_tied(const float* x, const float* Wt, float* out,
     for (int r = 0; r < rows; ++r) {
       const float* xr = x + static_cast<size_t>(r) * n_in;
       float* orow = out + static_cast<size_t>(r) * n_out;
-      for (int j = j0; j < j1; ++j) {
-        orow[j] = backend::dot(xr, Wt + static_cast<size_t>(j) * n_in,
-                               static_cast<size_t>(n_in));
+      if (Wt.quantized()) {
+        for (int j = j0; j < j1; ++j) {
+          orow[j] = backend::dot_i8(xr, Wt.i8 + static_cast<size_t>(j) * n_in,
+                                    static_cast<size_t>(n_in)) * Wt.scale[j];
+        }
+      } else {
+        for (int j = j0; j < j1; ++j) {
+          orow[j] = backend::dot(xr, Wt.f32 + static_cast<size_t>(j) * n_in,
+                                 static_cast<size_t>(n_in));
+        }
       }
     }
   });

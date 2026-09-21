@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the quantized-phase eval and record it as commit-tagged JSON.
 
-    python eval/run.py --policy fp32 --out eval/runs/fp32
-    python eval/run.py --policy int8 --out eval/runs/int8 \\
+    python eval/run.py --out eval/runs/fp32
+    python eval/run.py --out eval/runs/int8 \\
+                       --weights weights/gpt2-124m-int8.bin \\
                        --reference eval/runs/fp32
 
 engine/tools/gpt2_eval measures and dumps; eval/metrics.py judges; this adds
@@ -62,9 +63,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tool", type=Path, default=DEFAULT_TOOL)
+    parser.add_argument("--weights", type=Path, default=None,
+                        help="weight file; its header decides the policy")
     parser.add_argument("--out", type=Path, required=True,
                         help="dump directory, under eval/runs/")
-    parser.add_argument("--policy", default="fp32")
     parser.add_argument("--window", type=int, default=512)
     parser.add_argument("--windows", type=int, default=8)
     parser.add_argument("--kl-stride", type=int, default=16)
@@ -84,9 +86,11 @@ def main() -> int:
               "and does not count as a result.", file=sys.stderr)
 
     args.out.mkdir(parents=True, exist_ok=True)
-    cmd = [str(args.tool), "--out", str(args.out), "--policy", args.policy,
+    cmd = [str(args.tool), "--out", str(args.out),
            "--window", str(args.window), "--windows", str(args.windows),
            "--kl-stride", str(args.kl_stride), "--threads", str(args.threads)]
+    if args.weights is not None:
+        cmd += ["--weights", str(args.weights)]
     print(f"running {' '.join(cmd)}", file=sys.stderr)
     started = datetime.now(timezone.utc)
     proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)

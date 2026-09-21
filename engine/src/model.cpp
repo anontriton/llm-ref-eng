@@ -73,10 +73,11 @@ std::vector<float> Model::forward_impl(const std::vector<int32_t>& new_ids,
                                " out of range at position " +
                                std::to_string(start_pos + t));
     }
-    const float* tok = w_.wte() + static_cast<size_t>(id) * C;
     const float* pos = w_.wpe() + static_cast<size_t>(start_pos + t) * C;
     float* dst = x.data() + static_cast<size_t>(t) * C;
-    for (int i = 0; i < C; ++i) dst[i] = tok[i] + pos[i];
+    // Dequantizes when the table is int8; a plain copy otherwise.
+    w_.embed(id, dst);
+    for (int i = 0; i < C; ++i) dst[i] += pos[i];
   }
   emit(tap, "embed.out", x.data(), {1, T_new, C});
 

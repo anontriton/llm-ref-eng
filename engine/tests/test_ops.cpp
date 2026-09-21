@@ -116,7 +116,8 @@ void test_linear() {
   for (int i = 0; i < n_in * n_out; ++i) W[i] = static_cast<float>(0.1 * i - 0.5);
   for (int j = 0; j < n_out; ++j) b[j] = static_cast<float>(j);
 
-  gpt2::ops::linear(x.data(), W.data(), b.data(), out.data(), rows, n_in, n_out);
+  const gpt2::Matrix Wm{W.data(), nullptr, nullptr};
+  gpt2::ops::linear(x.data(), Wm, b.data(), out.data(), rows, n_in, n_out);
   for (int r = 0; r < rows; ++r) {
     for (int j = 0; j < n_out; ++j) {
       double want = b[j];
@@ -126,7 +127,7 @@ void test_linear() {
   }
 
   // A null bias means no bias, not a crash.
-  gpt2::ops::linear(x.data(), W.data(), nullptr, out.data(), rows, n_in, n_out);
+  gpt2::ops::linear(x.data(), Wm, nullptr, out.data(), rows, n_in, n_out);
   for (int r = 0; r < rows; ++r) {
     for (int j = 0; j < n_out; ++j) {
       double want = 0.0;
@@ -140,7 +141,8 @@ void test_linear() {
   {
     const int deep = 3072 + 37;
     std::vector<float> dx(deep, 1.0f), dW(deep, 1.0f), dout(1);
-    gpt2::ops::linear(dx.data(), dW.data(), nullptr, dout.data(), 1, deep, 1);
+    const gpt2::Matrix dWm{dW.data(), nullptr, nullptr};
+    gpt2::ops::linear(dx.data(), dWm, nullptr, dout.data(), 1, deep, 1);
     check::close(dout[0], static_cast<double>(deep), 1e-3,
                  "ragged inner dimension sums every term");
   }
@@ -153,7 +155,8 @@ void test_linear_tied() {
   // Wt is [n_out, n_in]: the tied lm_head reads rows of wte.
   for (int i = 0; i < n_out * n_in; ++i) Wt[i] = static_cast<float>(-0.2 * i + 0.7);
 
-  gpt2::ops::linear_tied(x.data(), Wt.data(), out.data(), rows, n_in, n_out);
+  const gpt2::Matrix Wtm{Wt.data(), nullptr, nullptr};
+  gpt2::ops::linear_tied(x.data(), Wtm, out.data(), rows, n_in, n_out);
   for (int r = 0; r < rows; ++r) {
     for (int j = 0; j < n_out; ++j) {
       double want = 0.0;

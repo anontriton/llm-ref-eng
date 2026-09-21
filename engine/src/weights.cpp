@@ -14,6 +14,7 @@ constexpr size_t kMaxDims = 4;
 constexpr size_t kEntrySize = 128;
 constexpr size_t kHeaderFixed = 8 + 16 + 32 + 32;
 constexpr uint32_t kDtypeF32 = 0;
+constexpr uint32_t kDtypeI8 = 1;
 
 [[noreturn]] void fail(const std::string& what) {
   throw std::runtime_error("weights: " + what);
@@ -85,6 +86,7 @@ Weights Weights::load(const std::string& path) {
   w.config_.vocab_size = static_cast<int>(read_u32(b + 44));
   w.config_.layer_norm_eps = read_f64(b + 48);
   w.source_sha256_ = to_hex(b + 56, 32);
+  w.quant_ = read_u32(b + 20);
 
   if (w.config_.n_head == 0 || w.config_.d_model % w.config_.n_head != 0) {
     fail(path + ": d_model is not divisible by n_head");
@@ -101,7 +103,9 @@ Weights Weights::load(const std::string& path) {
 
     const uint32_t ndim = read_u32(e + kNameField);
     const uint32_t dtype = read_u32(e + kNameField + 4);
-    if (dtype != kDtypeF32) fail(name + ": unsupported dtype");
+    if (dtype != kDtypeF32 && dtype != kDtypeI8) {
+      fail(name + ": unsupported dtype");
+    }
     if (ndim == 0 || ndim > kMaxDims) fail(name + ": bad ndim");
 
     WeightView view;
@@ -113,18 +117,39 @@ Weights Weights::load(const std::string& path) {
     }
     const uint64_t offset = read_u64(e + kNameField + 40);
     const uint64_t nbytes = read_u64(e + kNameField + 48);
-    if (nbytes != static_cast<uint64_t>(view.numel) * sizeof(float)) {
+    const size_t elem = dtype == kDtypeI8 ? 1 : sizeof(float);
+    if (nbytes != static_cast<uint64_t>(view.numel) * elem) {
       fail(name + ": byte count disagrees with shape");
     }
     const size_t start = data_start + offset;
     if (start + nbytes > w.blob_.size()) fail(name + ": data runs past end of file");
 
-    view.data = reinterpret_cast<const float*>(w.blob_.data() + start);
+    if (dtype == kDtypeI8) {
+      view.qdata = reinterpret_cast<const int8_t*>(w.blob_.data() + start);
+    } else {
+      view.data = reinterpret_cast<const float*>(w.blob_.data() + start);
+    }
     w.views_.emplace(std::move(name), std::move(view));
   }
 
   w.resolve();
   return w;
+}
+
+void Weights::embed(int32_t id, float* dst) const {
+  const int d = config_.d_model;
+  if (id < 0 || id >= config_.vocab_size) fail("embed: token id out of range");
+  const size_t row = static_cast<size_t>(id) * d;
+  if (!wte_.quantized()) {
+    const float* src = wte_.f32 + row;
+    for (int i = 0; i < d; ++i) dst[i] = src[i];
+    return;
+  }
+  // Per-row scale, which is the same scale the tied lm_head uses for this
+  // token's output channel -- one number describes the row in both directions.
+  const int8_t* q = wte_.i8 + row;
+  const float s = wte_.scale[id];
+  for (int i = 0; i < d; ++i) dst[i] = static_cast<float>(q[i]) * s;
 }
 
 const WeightView& Weights::get(const std::string& name) const {
@@ -151,10 +176,41 @@ void Weights::resolve() {
       m << "]";
       fail(m.str());
     }
+    if (v.quantized()) fail(name + ": expected float32, file holds int8");
     return v.data;
   };
 
-  wte_ = need("wte", {config_.vocab_size, d});
+  // A matrix, in whichever representation the file carries. When int8 it must
+  // come with a scale of exactly one entry per output channel; a missing or
+  // mis-sized scale is a corrupt file, not something to work around.
+  auto need_matrix = [&](const std::string& name, std::vector<int64_t> want,
+                         int64_t channels) -> Matrix {
+    const WeightView& v = get(name);
+    if (v.shape != want) {
+      std::ostringstream m;
+      m << name << ": shape [";
+      for (size_t i = 0; i < v.shape.size(); ++i) m << (i ? ", " : "") << v.shape[i];
+      m << "], expected [";
+      for (size_t i = 0; i < want.size(); ++i) m << (i ? ", " : "") << want[i];
+      m << "]";
+      fail(m.str());
+    }
+    Matrix out;
+    if (!v.quantized()) {
+      out.f32 = v.data;
+      return out;
+    }
+    out.i8 = v.qdata;
+    const WeightView& sv = get(name + ".scale");
+    if (sv.quantized()) fail(name + ".scale: must be float32");
+    if (sv.shape != std::vector<int64_t>{channels}) {
+      fail(name + ".scale: expected " + std::to_string(channels) + " entries");
+    }
+    out.scale = sv.data;
+    return out;
+  };
+
+  wte_ = need_matrix("wte", {config_.vocab_size, d}, config_.vocab_size);
   wpe_ = need("wpe", {config_.n_ctx, d});
   ln_f_w_ = need("ln_f.weight", {d});
   ln_f_b_ = need("ln_f.bias", {d});
@@ -165,15 +221,16 @@ void Weights::resolve() {
     LayerWeights& L = layers_[static_cast<size_t>(i)];
     L.ln_1_w = need(p + "ln_1.weight", {d});
     L.ln_1_b = need(p + "ln_1.bias", {d});
-    L.c_attn_w = need(p + "attn.c_attn.weight", {d, 3 * static_cast<int64_t>(d)});
+    L.c_attn_w = need_matrix(p + "attn.c_attn.weight",
+                             {d, 3 * static_cast<int64_t>(d)}, 3 * static_cast<int64_t>(d));
     L.c_attn_b = need(p + "attn.c_attn.bias", {3 * static_cast<int64_t>(d)});
-    L.attn_proj_w = need(p + "attn.c_proj.weight", {d, d});
+    L.attn_proj_w = need_matrix(p + "attn.c_proj.weight", {d, d}, d);
     L.attn_proj_b = need(p + "attn.c_proj.bias", {d});
     L.ln_2_w = need(p + "ln_2.weight", {d});
     L.ln_2_b = need(p + "ln_2.bias", {d});
-    L.c_fc_w = need(p + "mlp.c_fc.weight", {d, f});
+    L.c_fc_w = need_matrix(p + "mlp.c_fc.weight", {d, f}, f);
     L.c_fc_b = need(p + "mlp.c_fc.bias", {f});
-    L.mlp_proj_w = need(p + "mlp.c_proj.weight", {f, d});
+    L.mlp_proj_w = need_matrix(p + "mlp.c_proj.weight", {f, d}, d);
     L.mlp_proj_b = need(p + "mlp.c_proj.bias", {d});
   }
 }

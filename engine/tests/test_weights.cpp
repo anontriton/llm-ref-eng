@@ -82,12 +82,13 @@ int main() {
   // Every layer resolved to real pointers.
   for (int i = 0; i < c.n_layer; ++i) {
     const gpt2::LayerWeights& L = w.layer(i);
-    check::ok(L.ln_1_w && L.ln_1_b && L.c_attn_w && L.c_attn_b && L.attn_proj_w &&
-              L.attn_proj_b && L.ln_2_w && L.ln_2_b && L.c_fc_w && L.c_fc_b &&
-              L.mlp_proj_w && L.mlp_proj_b,
+    check::ok(L.ln_1_w && L.ln_1_b && L.c_attn_w.f32 && L.c_attn_b &&
+              L.attn_proj_w.f32 && L.attn_proj_b && L.ln_2_w && L.ln_2_b &&
+              L.c_fc_w.f32 && L.c_fc_b && L.mlp_proj_w.f32 && L.mlp_proj_b,
               "layer " + std::to_string(i) + " fully resolved");
   }
-  check::ok(w.wte() && w.wpe() && w.ln_f_w() && w.ln_f_b(), "top-level weights resolved");
+  check::ok(w.wte().f32 && w.wpe() && w.ln_f_w() && w.ln_f_b(),
+            "top-level weights resolved");
 
   // LayerNorm weights are near 1 and biases near 0 -- a cheap sanity check that
   // the data block is aligned with the directory rather than shifted.

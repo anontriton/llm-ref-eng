@@ -51,7 +51,7 @@ void usage(const char* argv0) {
   std::fprintf(stderr,
                "usage: %s [--weights FILE] [--corpus FILE] [--out DIR]\n"
                "          [--window N] [--windows N] [--kl-stride N]\n"
-               "          [--threads N] [--policy NAME]\n"
+               "          [--threads N]\n"
                "Writes nll/top1/logits_sample/sample_index .npy plus a "
                "manifest;\nprints a JSON summary on stdout.\n", argv0);
 }
@@ -66,7 +66,6 @@ int main(int argc, char** argv) {
   int windows = 8;
   int kl_stride = 16;
   int threads = 1;
-  std::string policy = "fp32";
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -84,7 +83,6 @@ int main(int argc, char** argv) {
     else if (arg == "--windows") windows = std::stoi(next("--windows"));
     else if (arg == "--kl-stride") kl_stride = std::stoi(next("--kl-stride"));
     else if (arg == "--threads") threads = std::stoi(next("--threads"));
-    else if (arg == "--policy") policy = next("--policy");
     else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
     else {
       std::fprintf(stderr, "%s: unknown argument %s\n", argv[0], arg.c_str());
@@ -124,6 +122,11 @@ int main(int argc, char** argv) {
     const gpt2::Weights weights = gpt2::Weights::load(weights_path);
     const gpt2::Model model(weights);
     const int vocab = weights.config().vocab_size;
+
+    // Read off the weight file, never passed in. A run that had to be told
+    // which policy it was under would eventually be told wrong, and the whole
+    // point of this harness is to be believed about that.
+    const std::string policy = weights.policy();
 
     // Non-overlapping windows. Each one predicts its own positions 1..L-1 from
     // the context inside it, so the first token of a window is never scored --

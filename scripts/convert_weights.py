@@ -55,6 +55,12 @@ NAME_FIELD = 64
 MAX_DIMS = 4
 ENTRY_SIZE = 128
 DTYPE_F32 = 0
+DTYPE_I8 = 1
+
+# Header word 4, describing the file as a whole rather than one tensor.
+QUANT_NONE = 0
+QUANT_INT8_PER_CHANNEL = 1
+DTYPE_SIZE = {DTYPE_F32: 4, DTYPE_I8: 1}
 HEADER_FIXED = 8 + 16 + 32 + 32          # magic + counts + config + sha256
 DATA_ALIGN = 64
 
@@ -145,13 +151,14 @@ def gather(weights_dir: Path) -> tuple[object, dict[str, np.ndarray]]:
     return cfg, {n: tensors[n] for n in wanted}
 
 
-def write_bin(out: Path, cfg, tensors: dict[str, np.ndarray], source_sha: bytes) -> None:
+def write_bin(out: Path, cfg, tensors: dict[str, np.ndarray], source_sha: bytes,
+              quant: int = QUANT_NONE) -> None:
     names = list(tensors)
     data_start = align_up(HEADER_FIXED + len(names) * ENTRY_SIZE, DATA_ALIGN)
 
     header = bytearray()
     header += MAGIC
-    header += struct.pack("<IIII", VERSION, len(names), data_start, 0)
+    header += struct.pack("<IIII", VERSION, len(names), data_start, quant)
     # eps is f64, not f32: the engine stamps it into its dump manifest and
     # oracle/compare.py compares config values exactly. Narrowing 1e-5 to f32
     # and widening it back yields 1.0000000116860974e-05, which reads as a
@@ -176,7 +183,8 @@ def write_bin(out: Path, cfg, tensors: dict[str, np.ndarray], source_sha: bytes)
 
         entry = bytearray()
         entry += raw_name.ljust(NAME_FIELD, b"\0")
-        entry += struct.pack("<II", a.ndim, DTYPE_F32)
+        dtype = DTYPE_I8 if a.dtype == np.int8 else DTYPE_F32
+        entry += struct.pack("<II", a.ndim, dtype)
         dims = list(a.shape) + [0] * (MAX_DIMS - a.ndim)
         entry += struct.pack("<4Q", *dims)
         entry += struct.pack("<QQQ", offset, a.nbytes, 0)
@@ -201,7 +209,7 @@ def read_bin(path: Path) -> tuple[dict, dict[str, np.ndarray]]:
     blob = path.read_bytes()
     if blob[:8] != MAGIC:
         raise SystemExit(f"{path}: bad magic {blob[:8]!r}")
-    version, n_tensors, data_start, _ = struct.unpack_from("<IIII", blob, 8)
+    version, n_tensors, data_start, quant = struct.unpack_from("<IIII", blob, 8)
     if version != VERSION:
         raise SystemExit(f"{path}: version {version}, expected {VERSION}")
     n_layer, n_head, d_model, d_ff, n_ctx, vocab_size, eps = struct.unpack_from(
@@ -213,6 +221,7 @@ def read_bin(path: Path) -> tuple[dict, dict[str, np.ndarray]]:
         "config": {"n_layer": n_layer, "n_head": n_head, "d_model": d_model,
                    "d_ff": d_ff, "n_ctx": n_ctx, "vocab_size": vocab_size,
                    "layer_norm_eps": eps},
+        "quant": quant,
         "source_sha256": source_sha.hex(),
     }
 
@@ -223,10 +232,12 @@ def read_bin(path: Path) -> tuple[dict, dict[str, np.ndarray]]:
         ndim, dtype = struct.unpack_from("<II", blob, base + NAME_FIELD)
         dims = struct.unpack_from("<4Q", blob, base + NAME_FIELD + 8)[:ndim]
         offset, nbytes, _ = struct.unpack_from("<QQQ", blob, base + NAME_FIELD + 40)
-        if dtype != DTYPE_F32:
+        if dtype not in DTYPE_SIZE:
             raise SystemExit(f"{name}: dtype {dtype}")
         start = data_start + offset
-        a = np.frombuffer(blob, dtype=np.float32, count=nbytes // 4, offset=start)
+        np_dtype = np.int8 if dtype == DTYPE_I8 else np.float32
+        a = np.frombuffer(blob, dtype=np_dtype,
+                          count=nbytes // DTYPE_SIZE[dtype], offset=start)
         tensors[name] = a.reshape(dims)
     return meta, tensors
 

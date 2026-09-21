@@ -43,6 +43,25 @@ void axpy(float alpha, const float* x, float* y, size_t n) {
   for (size_t i = 0; i < n; ++i) y[i] += alpha * x[i];
 }
 
+float dot_i8(const float* a, const int8_t* q, size_t n) {
+  float lane[kAccumLanes] = {0.0f};
+  const size_t tail = n % kAccumLanes;
+  const size_t body = n - tail;
+  for (size_t i = 0; i < body; i += kAccumLanes) {
+    for (size_t k = 0; k < kAccumLanes; ++k) {
+      lane[k] += a[i + k] * static_cast<float>(q[i + k]);
+    }
+  }
+  for (size_t i = 0; i < tail; ++i) {
+    lane[i] += a[body + i] * static_cast<float>(q[body + i]);
+  }
+  return reduce_lanes(lane);
+}
+
+void axpy_i8(float alpha, const int8_t* q, float* y, size_t n) {
+  for (size_t i = 0; i < n; ++i) y[i] += alpha * static_cast<float>(q[i]);
+}
+
 float sum(const float* x, size_t n) {
   float lane[kAccumLanes] = {0.0f};
   const size_t tail = n % kAccumLanes;

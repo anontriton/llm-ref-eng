@@ -95,6 +95,44 @@ float dot(const float* a, const float* b, size_t n) {
   return finish_tail(acc, a, b, body, tail);
 }
 
+// Widen eight int8 to eight fp32. Both conversions are exact -- every int8
+// value is representable in fp32 -- so this introduces no rounding of its own
+// and the multiply that follows is the same one the scalar backend does.
+inline __m256 widen_i8(const int8_t* q) {
+  const __m128i bytes = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(q));
+  return _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(bytes));
+}
+
+float dot_i8(const float* a, const int8_t* q, size_t n) {
+  const size_t tail = n % kAccumLanes;
+  const size_t body = n - tail;
+  __m256 acc = _mm256_setzero_ps();
+  for (size_t i = 0; i < body; i += kAccumLanes) {
+    acc = _mm256_add_ps(acc, _mm256_mul_ps(_mm256_loadu_ps(a + i),
+                                           widen_i8(q + i)));
+  }
+  if (tail == 0) return reduce_lanes(acc);
+  alignas(32) float lane[kAccumLanes];
+  _mm256_store_ps(lane, acc);
+  for (size_t i = 0; i < tail; ++i) {
+    lane[i] += a[body + i] * static_cast<float>(q[body + i]);
+  }
+  return reduce_lanes(_mm256_load_ps(lane));
+}
+
+void axpy_i8(float alpha, const int8_t* q, float* y, size_t n) {
+  const __m256 va = _mm256_set1_ps(alpha);
+  const size_t tail = n % kAccumLanes;
+  const size_t body = n - tail;
+  for (size_t i = 0; i < body; i += kAccumLanes) {
+    _mm256_storeu_ps(y + i, _mm256_add_ps(_mm256_loadu_ps(y + i),
+                                          _mm256_mul_ps(va, widen_i8(q + i))));
+  }
+  for (size_t i = body; i < n; ++i) {
+    y[i] += alpha * static_cast<float>(q[i]);
+  }
+}
+
 void axpy(float alpha, const float* x, float* y, size_t n) {
   // Elementwise, so there is no summation order to preserve -- only the
   // requirement that each y[i] is still a rounded product added to a rounded

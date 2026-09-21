@@ -6,6 +6,8 @@
 // underneath without touching this file.
 #pragma once
 
+#include "gpt2/weights.h"
+
 #include <cstddef>
 
 #include "gpt2/config.h"
@@ -24,12 +26,12 @@ void layernorm(const float* x, const float* w, const float* b, float* out,
 //
 // Accumulates by sweeping W's rows, which keeps every memory access
 // contiguous: out[r, :] starts at bias and takes one axpy per input element.
-void linear(const float* x, const float* W, const float* bias, float* out,
+void linear(const float* x, const Matrix& W, const float* bias, float* out,
             int rows, int n_in, int n_out);
 
 // y = x @ Wt^T + 0, with Wt stored [n_out, n_in]: the tied lm_head, where the
 // weight is wte and the natural inner loop is a contiguous dot product.
-void linear_tied(const float* x, const float* Wt, float* out,
+void linear_tied(const float* x, const Matrix& Wt, float* out,
                  int rows, int n_in, int n_out);
 
 // The tanh approximation of GELU, which is what GPT-2 was trained with. NOT the
