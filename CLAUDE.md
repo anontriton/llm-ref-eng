@@ -141,7 +141,7 @@ and the abstraction layer is designed against that width.
 - [x] 2 correct C++
 - [x] 3 perf
 - [x] 4 quantization
-- [ ] 5 WASM
+- [x] 5 WASM
 - [ ] 6 docs
 
 Update this checklist when a phase's exit criteria are met, not when its code is
@@ -223,3 +223,39 @@ fp32 tolerance was in Phase 2 -- top-1 from a guessed 98% to a measured 97%,
 after the disagreements were shown to sit where fp32's own top-1/top-2 margin
 is 0.00093 against 0.10553 elsewhere. The int4 rejection above is what that
 revision bought the right to say.
+
+Phase 5 exit criteria, met: the engine builds to wasm and passes the oracle
+under Node, the wasm_simd128 backend is bit-identical to wasm scalar, both are
+benchmarked beside native, and a browser demo runs the engine and shows
+exactly its output. `web/build.sh` builds it; `web/README.md` has the detail.
+
+The wasm build is not bit-identical to native, and cannot be while the kernels
+call libm: GELU's tanh comes from musl under Emscripten, off by up to 2 ulp on
+23% of inputs where glibc's is correctly rounded. Everything before
+`block.0.mlp.act.out` agrees exactly; the oracle passes at 58.1% of budget
+against native's 52.0%. So wasm_simd128 is held to the wasm scalar build --
+615/615 tensors identical, int8 outputs byte-identical -- the standard AVX2
+met against native scalar. Single-threaded, T=128/128:
+
+    tokens/sec    native avx2 23.96    wasm_simd128 17.70    74%
+
+The download was the problem, not speed. `reference/wte_sim.py` found int8
+wte's damage is entirely lm_head, and entirely a few hidden dims where ln_f's
+output is two hundred times the median. `int8-wte-o8` zeroes those 8 columns
+in the int8 table and keeps them in fp32: 243.3 MB -> 129.3 MB, perplexity
+x0.99805, top-1 97.383%, decisive disagreement 0/256 on the engine -- the
+simulation predicted the perplexity to five decimals -- and decode 1.15x
+faster, since lm_head stops streaming fp32.
+
+The tokenizer is `web/tokenizer.js`, hand-written and held to HF's ids on a
+committed fixture, to every committed prompt, and to a decode/re-encode round
+trip over 24,576 corpus tokens; its test was shown to fail on six planted
+bugs. The demo (`web/serve.sh`) streams the weights into wasm memory, runs in
+a worker, and at temperature 0 puts on screen exactly what `gpt2_generate`'s
+ids decode to, checked in headless Chrome. Decode is 21 ms/token in the
+browser. Threads are not in the wasm build: they need SharedArrayBuffer and
+cross-origin isolation, and single-threaded was enough to meet the rest.
+
+`bench/run.py` records the machine's power state since this phase, after a
+matrix measured on battery came out 2.4x slow in every metric and nothing in
+the JSON said so.
