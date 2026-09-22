@@ -229,6 +229,19 @@ and wasm_simd128; native and wasm differ by at most 9.2e-5 in a logit, the
 libm difference from step 1, with top-1 identical at every position. fp32 is
 untouched -- 615/615 oracle tensors identical to before the change.
 
+It is also faster where it matters. lm_head was the fp32 half of every decode
+step; now it streams a quarter of the bytes. T=128/128, KV cache, one thread,
+at f45d648:
+
+                          int8 tok/s   decode ms   int8-wte-o8 tok/s   decode ms
+    native avx2             32.30        18.75         36.36            15.26
+    wasm   wasm_simd128     21.77        27.02         23.11            23.45
+
+Every build decodes Phase 4's int8 ids exactly on the new file. Scalar gets
+slower -- 9.78 to 7.93 tok/s native -- because unvectorized int8 is already
+slower than fp32 there, and now lm_head is int8 too; no shipping build is
+scalar.
+
 ## Suggested order
 
 1. **Done.** Build the *scalar* backend to wasm, dump, and run
