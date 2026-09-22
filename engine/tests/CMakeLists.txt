@@ -11,3 +11,11 @@ foreach(test_src ${GPT2_TEST_SOURCES})
     GPT2_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+
+# Without -pthread, Emscripten's std::thread constructor throws, so the pool
+# cannot exist and there is nothing for test_threading to test. Disabled rather
+# than dropped, so ctest still lists it -- as not run -- until the wasm build
+# gets threads.
+if(EMSCRIPTEN)
+  set_tests_properties(test_threading PROPERTIES DISABLED TRUE)
+endif()

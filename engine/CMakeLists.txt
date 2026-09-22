@@ -41,6 +41,31 @@ endif()
 
 message(STATUS "gpt2: backend ${GPT2_BACKEND}")
 
+# Phase 5: the same sources under Emscripten, configured with emcmake (see
+# web/build.sh). Every tool becomes a .js + .wasm pair run by Node, which the
+# toolchain also registers as the ctest emulator.
+#
+# - NODERAWFS: the program sees the real filesystem, so --weights, --runs and
+#   --out mean exactly what they mean natively and dumps land where
+#   oracle/compare.py can read them. Node only; the browser build will differ.
+# - Memory: the fp32 weight file alone is 498 MB, read into one buffer. wasm32
+#   tops out at 4 GB.
+# - Exceptions: Emscripten turns catching off by default, and every tool
+#   reports failure through a catch in main. Native wasm exceptions, not the
+#   JS-emulated kind, which wraps every call that might throw.
+# - No -pthread yet. The pool is never built at --threads 1; asking for more
+#   fails at the first std::thread, loudly.
+if(EMSCRIPTEN)
+  add_compile_options(-fwasm-exceptions)
+  add_link_options(
+    -fwasm-exceptions
+    -sNODERAWFS=1
+    -sALLOW_MEMORY_GROWTH=1
+    -sMAXIMUM_MEMORY=4GB
+    -sSTACK_SIZE=1MB
+    -sEXIT_RUNTIME=1)
+endif()
+
 find_package(Threads REQUIRED)
 
 if(GPT2_SOURCES)

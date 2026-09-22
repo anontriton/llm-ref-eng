@@ -63,7 +63,9 @@ def main() -> int:
         print(f"no engine binary at {args.engine} -- build it first", file=sys.stderr)
         return 2
 
-    cmd = [str(args.engine), "--steps", str(args.steps)]
+    # An Emscripten build is a .js launcher for its .wasm, run by Node.
+    cmd = ["node"] if args.engine.suffix == ".js" else []
+    cmd += [str(args.engine), "--steps", str(args.steps)]
     if args.kv_cache:
         cmd += ["--kv-cache"]
     if args.run:

@@ -3,12 +3,18 @@
 Compiles the same `engine/` sources to WebAssembly. No engine fork: if the web
 build needs a change, it goes into the engine behind the backend abstraction.
 
-Nothing here is written yet. `demo/` is an empty placeholder and there is no
-`build.sh`; the plan below is the whole of it.
+Phase: 5, step 1 of 4 done -- the scalar backend builds to wasm and passes
+the oracle under Node. `demo/` is still an empty placeholder.
 
-Phase: 5, not started. `emcc` 6.0.9-git is installed but not on PATH -- Arch
-keeps the drivers in `/usr/lib/emscripten` and only puts binaryen's `wasm-*`
-tools in `/usr/bin`. See CLAUDE.md's Environment section.
+    web/build.sh                     # -> web/build/engine-scalar/
+    node web/build/engine-scalar/tools/gpt2_dump.js --out web/build/dumps
+    .venv/bin/python oracle/compare.py web/build/dumps/manifest.json
+    .venv/bin/python oracle/check_greedy.py \
+        --engine web/build/engine-scalar/tools/gpt2_generate.js
+    ctest --test-dir web/build/engine-scalar
+
+`build.sh` finds `emcc` itself; Arch keeps the drivers in `/usr/lib/emscripten`,
+off PATH. See CLAUDE.md's Environment section.
 
 Oracle validation still applies: the wasm build is compared against the same
 PyTorch dumps, run in Node. A backend that cannot reproduce the oracle is not
@@ -77,14 +83,44 @@ this phase and the one most likely to disagree with the reference. Pin it
 against `eval/corpus.tsv`: the same text tokenized by the Python side is
 already committed, ids and checksum.
 
-**Validation in Node.** `gpt2_dump` writes `.npy` through `engine/src/npy.cpp`;
-under Emscripten that needs a filesystem mount (`NODEFS`) or the dumps have to
-come back over a binding. Either is fine -- `oracle/compare.py` only cares that
-the files land somewhere with a manifest beside them.
+**Validation in Node** is settled: the build links with `-sNODERAWFS=1`, so the
+tools see the real filesystem and every path argument means what it does
+natively. The flags and why are in `engine/CMakeLists.txt`. That is a Node-only
+arrangement; the browser build will load weights differently.
+
+## Step 1 result: scalar under Node
+
+    oracle/compare.py         615/615 pass, worst block.11.mlp.out at 58.1%
+    oracle/compare.py (kv)    615/615 pass
+    check_greedy.py           50/50, with and without --kv-cache
+    ctest                     6/6 pass, test_threading disabled (no pthreads)
+    gpt2_dump, all 5 runs     21 s single-threaded, Node 22
+
+**It is not bit-identical to the native engine, and cannot be while the
+kernels call libm.** The two agree exactly through embeddings, layernorm, QKV,
+attention and softmax, and part at `block.0.mlp.act.out` -- GELU, the first
+`std::tanh`. Native links glibc; Emscripten links musl. Measured over every
+float in [2^-20, 10]:
+
+    glibc tanhf   correctly rounded everywhere
+    musl  tanhf   23.3% of inputs off, by up to 2 ulp
+
+`expf`, softmax's one call, is correctly rounded 99.96% of the time in both,
+but not on the same inputs; the oracle prompts happen not to reach the
+difference. Hence 58.1% of budget where native reports 52.0%: still well
+inside tolerance, but a different number.
+
+What that means for step 2: the wasm_simd128 backend is held bit-identical to
+the *wasm* scalar build, which shares its libm -- not to native. The backend
+seam was never where the transcendentals live (they are in `ops.cpp`), so this
+does not touch the SIMD work. If cross-platform bit-identity is ever wanted,
+it means the engine carrying its own `tanh` and `exp` built from `+ - * /`,
+re-validated against the oracle, since glibc's `tanhf` is the one being
+matched today.
 
 ## Suggested order
 
-1. Install `emcc`, build the *scalar* backend to wasm, dump, and run
+1. **Done.** Build the *scalar* backend to wasm, dump, and run
    `oracle/compare.py` on it. That is the whole Phase 2 proof, unchanged, and
    it separates "does it compile and run" from "is the SIMD right".
 2. Add `src/backend_wasm_simd128.cpp` against `backend.h`, and hold it to the
