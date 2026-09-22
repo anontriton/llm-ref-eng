@@ -110,7 +110,16 @@ numpy 2.5.3, transformers 5.17.0. Recreate with:
 Run Python entry points from the repo root, e.g. `.venv/bin/python
 reference/validate_hf.py`.
 
-Still needed later: Emscripten SDK / `emcc` (Phase 5). Not installed yet.
+Emscripten 6.0.9-git (4e42238) for Phase 5, from Arch's `extra/emscripten`.
+It does **not** put `emcc` on PATH -- only binaryen's `wasm-*` tools land in
+`/usr/bin`, and the compiler drivers stay in `/usr/lib/emscripten`:
+
+    export PATH="$PATH:/usr/lib/emscripten"     # or call emcc by full path
+
+`emcc --version` runs a sanity check on first use, so a slow first invocation
+is normal rather than a symptom. Node 22.23.2 is present, which Emscripten
+depends on and which Phase 5 also needs to run the wasm build against the
+oracle.
 
 Present: g++ 16.2.1, cmake, make, ninja, 4 cores / 8 threads, AVX2 + FMA +
 AVX512F.

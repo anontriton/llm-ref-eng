@@ -6,7 +6,9 @@ build needs a change, it goes into the engine behind the backend abstraction.
 Nothing here is written yet. `demo/` is an empty placeholder and there is no
 `build.sh`; the plan below is the whole of it.
 
-Phase: 5, not started. Requires the Emscripten SDK (`emcc`), **not installed**.
+Phase: 5, not started. `emcc` 6.0.9-git is installed but not on PATH -- Arch
+keeps the drivers in `/usr/lib/emscripten` and only puts binaryen's `wasm-*`
+tools in `/usr/bin`. See CLAUDE.md's Environment section.
 
 Oracle validation still applies: the wasm build is compared against the same
 PyTorch dumps, run in Node. A backend that cannot reproduce the oracle is not
