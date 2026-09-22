@@ -209,3 +209,9 @@ Complete: all seven phases, in order, each closed on evidence recorded in
 [CLAUDE.md](CLAUDE.md) -- foundations, the oracle, a correct C++ engine,
 performance, quantization, WebAssembly, and these docs. Known limits are at
 the end of [docs/findings.md](docs/findings.md#known-limits).
+
+## License
+
+[MIT](LICENSE). The GPT-2 weights are not in this repository;
+`scripts/download_weights.py` fetches them from Hugging Face, where OpenAI
+released them under the MIT license as well.
