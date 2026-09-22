@@ -3,9 +3,10 @@
 Compiles the same `engine/` sources to WebAssembly. No engine fork: if the web
 build needs a change, it goes into the engine behind the backend abstraction.
 
-Phase: 5, steps 1 and 2 of 4 done -- the scalar and wasm_simd128 backends
-both build to wasm and pass the oracle under Node, and the two are bit-identical
-to each other. `demo/` is still an empty placeholder.
+Phase: 5, steps 1-3 of 4 done -- the scalar and wasm_simd128 backends both
+build to wasm and pass the oracle under Node, the two are bit-identical to each
+other, and both are benchmarked beside native. `demo/` is still an empty
+placeholder.
 
     web/build.sh                     # -> web/build/engine-scalar/
     web/build.sh wasm_simd128        # -> web/build/engine-wasm_simd128/
@@ -143,6 +144,48 @@ than a benchmark:
     gpt2_dump, all 5 runs     scalar 21 s   wasm_simd128  8.5 s   2.5x
     gpt2_eval int8, 2 windows scalar 221 s  wasm_simd128  59 s    3.7x
 
+## Step 3 result: benchmarked beside native
+
+`bench/run.py --tool .../gpt2_bench.js` runs a wasm build under Node and records
+it with `config.target: wasm32` and the Node version. Eight results at 2a5a496,
+all on one machine in one sitting: T=128 prompt, 128 generated, KV cache, one
+thread, on AC under the performance profile.
+
+    fp32                  tok/s   prefill ms   decode ms/tok
+    native scalar         12.26      4424         47.40
+    native avx2           23.96      1676         28.87
+    wasm   scalar          7.66      7726         70.75
+    wasm   wasm_simd128   17.70      2550         36.86
+
+    int8                  tok/s   prefill ms   decode ms/tok
+    native scalar          9.78      6099         55.03
+    native avx2           32.30      1582         18.75
+    wasm   scalar          6.60      9236         79.95
+    wasm   wasm_simd128   21.77      2449         27.02
+
+- **wasm_simd128 is 74% of native AVX2 end to end** in fp32, 67% in int8.
+  Decode is 1.28x behind, prefill 1.52x. Half the vector width is the obvious
+  suspect for prefill, which is compute-bound; decode is closer because it is
+  bound by memory traffic, which the width does not change.
+- **SIMD is 2.3x over wasm scalar**, 3.0x on prefill -- a larger gain than AVX2
+  gets over native scalar on the same backend seam.
+- **int8 pays off in wasm too**, 1.23x end to end, from decode: 36.9 to 27.0
+  ms/token, half the weight bytes per step. Scalar int8 is *slower* than scalar
+  fp32 on both targets; the widening only earns its keep once it is vectorized.
+- **Weight loading is 2.7x slower** under Node (212 vs 80 ms), which is
+  NODERAWFS reading through JS. It is outside every metric above and says
+  nothing about the browser, which will not read a file at all.
+- Native avx2 fp32 reproduces Phase 3's single-thread figure, 23.96 against
+  23.94, and every fp32 run decodes exactly Phase 3's 128 ids, every int8 run
+  exactly Phase 4's. The harness is measuring the same programs.
+
+Single-threaded on both sides, which flatters nothing: native reaches 42.8
+tok/s at 8 threads and the wasm build has none yet (see Threads above).
+
+These replace a first attempt that is not in `results/`: measured on battery
+under the low-power profile, 2.4x slow across the board. `bench/run.py` now
+records the power state and names such a run `...-lowpower.json`.
+
 ## Suggested order
 
 1. **Done.** Build the *scalar* backend to wasm, dump, and run
@@ -151,6 +194,6 @@ than a benchmark:
 2. **Done.** Add `src/backend_wasm_simd128.cpp` against `backend.h`, and hold it to the
    same standard AVX2 met: 615 tensors bit-identical to scalar, not merely
    within tolerance.
-3. Benchmark with `bench/run.py`, which already records the backend the binary
+3. **Done.** Benchmark with `bench/run.py`, which already records the backend the binary
    reports rather than a flag.
 4. Then the demo page, and the size question above.
