@@ -3,10 +3,11 @@
 Compiles the same `engine/` sources to WebAssembly. No engine fork: if the web
 build needs a change, it goes into the engine behind the backend abstraction.
 
-Phase: 5, steps 1-3 of 4 done -- the scalar and wasm_simd128 backends both
-build to wasm and pass the oracle under Node, the two are bit-identical to each
-other, and both are benchmarked beside native. `demo/` is still an empty
-placeholder.
+Phase: 5, steps 1-3 of 4 done. The scalar and wasm_simd128 backends both build
+to wasm and pass the oracle under Node, bit-identical to each other and
+benchmarked beside native. Of step 4, the browser's weight file (129 MB) and
+the JavaScript tokenizer are done; the demo page is not, and `demo/` is still
+an empty placeholder.
 
     web/build.sh                     # -> web/build/engine-scalar/
     web/build.sh wasm_simd128        # -> web/build/engine-wasm_simd128/
@@ -92,12 +93,35 @@ Single-threaded is the safe default; the pool already runs with no threads and
 no locks at `count() == 1`, so this degrades cleanly rather than needing a
 second code path.
 
-**The tokenizer.** The engine does not tokenize -- deliberately, since Phase 1 --
-and every existing entry point takes token ids from a TSV. A browser demo needs
-real tokenization in JavaScript, which is the one genuinely new component in
-this phase and the one most likely to disagree with the reference. Pin it
-against `eval/corpus.tsv`: the same text tokenized by the Python side is
-already committed, ids and checksum.
+**The tokenizer** is `web/tokenizer.js`: GPT-2's byte-level BPE, hand-written,
+no dependencies, the same file in Node and the page. The engine still does not
+tokenize -- the demo does it in JavaScript and hands the engine ids.
+
+    node web/test_tokenizer.mjs
+
+    fixture   494 cases vs HF's tokenizer, committed in web/tokenizer_cases.json
+    prompts   the oracle's 5 prompts and bench128, text and ids both pinned
+    corpus    decode then re-encode eval/corpus.tsv + eval/calib.tsv, 24,576
+              real tokens, exact (and the ids checked against their sha256)
+    stream    streamDecoder() one id at a time == decode() on every sequence
+
+The plan here once said the corpus *text* was committed. It is not -- only the
+ids and a checksum of the text. Byte-level BPE is lossless, though, so
+`decode(ids)` is exactly the text the ids were cut from, and re-encoding it has
+to reproduce HF's tokenization token for token. That is the strongest of the
+four checks, and it runs in 60 ms.
+
+HF produces the fixture (`scripts/export_tokenizer_cases.py`) and is used for
+nothing else -- the role `GPT2LMHeadModel` has for the model. Two behaviours the
+fixture decided rather than a guess: `<|endoftext|>` typed as text becomes id
+50256 with the whitespace around it kept, as HF does; and `\s` in GPT-2's
+pattern means Unicode White_Space, which JavaScript's `\s` is not (it adds
+U+FEFF and drops U+0085), so the regex spells out `\p{White_Space}`.
+
+The test has been shown to fail: planting a wrong merge order, a wrong byte
+table, a missing contraction, a narrower number class, a JS `\s`, or a
+non-streaming decoder each produces between 11 and 550 reported mismatches.
+A tokenizer that throws is reported per case, not as a crash.
 
 **Validation in Node** is settled: the build links with `-sNODERAWFS=1`, so the
 tools see the real filesystem and every path argument means what it does
