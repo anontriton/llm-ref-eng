@@ -5,10 +5,12 @@
     python bench/run.py --generate 32        # a cheaper run
     python bench/run.py --no-write           # print, record nothing
     python bench/run.py --tool engine/build-avx2/tools/gpt2_bench
+    python bench/run.py --tool web/build/engine-wasm_simd128/tools/gpt2_bench.js
 
 The backend and build type are read from the binary and from the CMake cache
 beside it, not passed in, so a result cannot claim a backend it was not built
-with.
+with. A .js tool is an Emscripten build: it runs under Node, and the result
+records wasm32 as its target and Node as its runtime.
 
 engine/tools/gpt2_bench measures; this adds the provenance that makes a number
 mean something -- which commit produced it, on which machine, with which build.
@@ -117,7 +119,9 @@ def main() -> int:
               "is recorded as dirty and does not count as a result.",
               file=sys.stderr)
 
-    cmd = [str(args.tool),
+    wasm = is_wasm(args.tool)
+    cmd = ["node"] if wasm else []
+    cmd += [str(args.tool),
            "--weights", str(args.weights),
            "--prompts", str(args.prompts),
            "--generate", str(args.generate),
@@ -144,6 +148,9 @@ def main() -> int:
         "timestamp": started.isoformat().replace("+00:00", "Z"),
         "config": {
             "build": cmake_build_type(args.tool),
+            # scalar is a backend on both targets, and the two are different
+            # programs: different compiler, different libm, a JIT in between.
+            "target": "wasm32" if wasm else "native",
             # Both reported by the binary itself. A benchmark that had to be
             # told which backend it was running would eventually be told wrong.
             "backend": measured["backend"],
@@ -177,7 +184,8 @@ def main() -> int:
             "cpu": cpu_name(),
             "cores": os.cpu_count(),
             "platform": platform.platform(),
-            "compiler": compiler_version(),
+            "compiler": compiler_version(wasm),
+            "runtime": node_version() if wasm else "native",
         },
     }
 
@@ -189,6 +197,9 @@ def main() -> int:
 
     stamp = started.strftime("%Y%m%dT%H%M%SZ")
     parts = [stamp, sha[:7], measured["backend"]]
+    # A wasm scalar result must not sort as a native scalar one.
+    if wasm and "wasm" not in measured["backend"]:
+        parts.append("wasm")
     if measured["threads"] > 1:
         parts.append(f"t{measured['threads']}")
     # In the name, because a cached and an uncached run at the same commit are
@@ -208,16 +219,30 @@ def main() -> int:
     return 0
 
 
-def compiler_version() -> str:
-    cxx = shutil.which("g++")
-    if not cxx:
-        return "unknown"
+def is_wasm(tool: Path) -> bool:
+    """An Emscripten build is a .js launcher for its .wasm, run by Node."""
+    return tool.suffix == ".js"
+
+
+def first_line(cmd: list[str]) -> str:
     try:
-        first = subprocess.run([cxx, "--version"], capture_output=True,
-                               text=True, check=True).stdout.splitlines()[0]
-        return first.strip()
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              check=True).stdout.splitlines()[0].strip()
     except (subprocess.CalledProcessError, OSError, IndexError):
         return "unknown"
+
+
+def compiler_version(wasm: bool) -> str:
+    if wasm:
+        # Arch keeps emcc off PATH; see CLAUDE.md's Environment section.
+        emcc = shutil.which("emcc") or "/usr/lib/emscripten/emcc"
+        return first_line([emcc, "--version"])
+    cxx = shutil.which("g++")
+    return first_line([cxx, "--version"]) if cxx else "unknown"
+
+
+def node_version() -> str:
+    return "node " + first_line(["node", "--version"])
 
 
 if __name__ == "__main__":
