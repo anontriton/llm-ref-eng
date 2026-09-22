@@ -95,11 +95,24 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--tsv", type=Path, default=DEFAULT_TSV)
     parser.add_argument("--name", default=NAME)
+    parser.add_argument("--force", action="store_true",
+                        help="overwrite an existing corpus. Required, because "
+                             "the committed one is pinned and results depend "
+                             "on it")
     parser.add_argument("--split", default=SPLIT,
                         help="which split to draw from. Calibration data must "
                              "not come from the split the eval measures on, or "
                              "the quantizer is tuned on its own test set")
     args = parser.parse_args()
+
+    # The corpus is an input that committed results were measured against, not
+    # a cache to be refreshed. Re-fetching can return different rows, and every
+    # perplexity in eval/results/ would quietly stop meaning what it says.
+    if args.tsv.exists() and not args.force:
+        raise SystemExit(
+            f"{args.tsv} already exists and is pinned; results in eval/results/ "
+            f"were measured on it. Pass --force only if you intend to invalidate "
+            f"them.")
 
     print(f"fetching {args.rows} rows of {DATASET}/{CONFIG}/{args.split}")
     rows = fetch_rows(args.rows, args.split)

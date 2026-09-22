@@ -26,14 +26,16 @@ namespace {
 
 void usage(const char* argv0) {
   std::fprintf(stderr,
-               "usage: %s [--weights FILE] [--runs FILE] [--out DIR] "
-               "[--run NAME]... [--quiet]\n"
+               "usage: %s [--weights FILE] [--runs FILE] [--out DIR]\n"
+               "          [--run NAME]... [--kv-cache] [--threads N] [--quiet]\n"
                "  --weights  flat weight file   (default weights/gpt2-124m.bin)\n"
                "  --runs     run definitions    (default engine/runs.tsv)\n"
                "  --out      dump directory     (default engine/dumps)\n"
                "  --run      only this run, repeatable\n"
       "  --kv-cache decode the last token through the KV cache and dump\n"
-      "             only that row (compare.py slices the reference)\n",
+      "             only that row (compare.py slices the reference)\n"
+      "  --threads  worker threads (default 1); dumps are identical at any\n"
+      "             count, which is the property worth checking\n",
                argv0);
 }
 
