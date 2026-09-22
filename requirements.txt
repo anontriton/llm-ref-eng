@@ -1,4 +1,10 @@
-# Phase 0/1 only. The engine itself has no Python dependency.
+# The Python side: the reference, the oracle and eval tooling, weight
+# conversion and quantization. The engine itself has no Python dependency.
+#
+# Install torch from the CPU index, or pip pulls several GB of CUDA:
+#   .venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+#   .venv/bin/python -m pip install -r requirements.txt
+# ./demo.sh needs only numpy and torch, and installs them itself.
 numpy>=1.24
 torch>=2.0
 # Validation + tokenization ONLY -- never the reference implementation itself.

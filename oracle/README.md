@@ -93,4 +93,5 @@ WikiText-2 slice, top-1 agreement rate vs fp32, and KL divergence of logits.
 
 Exit codes: 0 pass, 1 numeric divergence, 2 provenance or usage error.
 
-Phase: 1 onward, re-run on EVERY optimization commit.
+Built in Phase 1, and re-run on every optimization commit since -- native and,
+from Phase 5, wasm.

@@ -90,4 +90,7 @@ against HuggingFace:
 50 MB and regenerate from the committed corpus. `eval/results/*.json` is the
 committed, commit-tagged summary, the same arrangement as `bench/results/`.
 
-Phase: built at the end of 3, used by every quantized commit in 4.
+Built at the end of Phase 3, before anything was quantized. It judged int8 in
+Phase 4 and `int8-wte-o8` in Phase 5, and both results are in `results/`. int4
+never reached the engine; `reference/gptq.py` scored it with the same
+metric definitions, and it failed every threshold here.

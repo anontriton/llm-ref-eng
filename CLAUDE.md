@@ -76,12 +76,14 @@ Commit to bench/results/. Built BEFORE optimization starts.
 - `bench/` - benchmark harness + `results/` (committed JSON, commit-tagged)
 - `eval/` - quantized-phase harness: pinned corpus, `metrics.py`, `results/`
 - `web/` - Emscripten build + demo page
-- `scripts/` - weight download, format conversion
+- `scripts/` - weight download, format conversion, quantization, pinned inputs
+- `docs/` - findings, and the procedure for maintaining the repository
 
 Generated artifacts (weights, `.npy` activation dumps, build dirs) are
 gitignored. The committed exceptions are `bench/results/*.json` and
 `eval/results/*.json`, both commit-tagged, plus the pinned inputs they depend
-on: `bench/prompts.tsv` and `eval/corpus.tsv`.
+on: `bench/prompts.tsv`, `eval/corpus.tsv`, `eval/calib.tsv`, and the
+tokenizer's fixture `web/tokenizer_cases.json`.
 
 ## Oracle contract
 The oracle is a directory of `.npy` tensors plus `oracle/manifest.json`
@@ -142,7 +144,7 @@ and the abstraction layer is designed against that width.
 - [x] 3 perf
 - [x] 4 quantization
 - [x] 5 WASM
-- [ ] 6 docs
+- [x] 6 docs
 
 Update this checklist when a phase's exit criteria are met, not when its code is
 merely written.
@@ -259,3 +261,19 @@ cross-origin isolation, and single-threaded was enough to meet the rest.
 `bench/run.py` records the machine's power state since this phase, after a
 matrix measured on battery came out 2.4x slow in every metric and nothing in
 the JSON said so.
+
+Phase 6 exit criteria, met: every document is current, every documented
+command runs, and the README is written for someone arriving cold. The README
+says what the project is, how correctness is proven, and what it measured;
+`docs/findings.md` holds the findings, ten now, and the known limits;
+`docs/maintaining.md` holds the procedure for changing the engine without
+breaking what it proves. `./demo.sh` is the one-command path to the browser
+demo from a fresh clone, prerequisites checked before anything is downloaded.
+
+Proven rather than proofread: in a clean clone, every command block in the
+README and `docs/maintaining.md` -- about 60 commands, the full reproduce
+included -- ran without a failure, and the regenerated oracle matched the
+committed manifest's 615 checksums, the three weight files byte for byte; and
+`./demo.sh` took a clone with nothing installed to a served page. Every
+relative link and anchor in the docs resolves.
+

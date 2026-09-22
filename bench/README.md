@@ -17,11 +17,12 @@ the oracle uses: the C++ side produces, the Python side records and judges.
 travel as data. Regenerate it with `scripts/export_bench_prompt.py`; it is
 committed, so a result stays reproducible.
 
-Useful flags: `--generate N`, `--prefill-repeat N`, `--no-write`, and
-`--backend/--threads/--kv-cache`, which declare how the binary was built so the
-config is recorded honestly. There is no build-level backend switch yet, so
-`--backend` is an assertion rather than a detection; that changes when the AVX2
-backend lands.
+Useful flags: `--tool` (any build's `gpt2_bench`, including a wasm build's
+`gpt2_bench.js`, which runs under Node), `--weights`, `--kv-cache`,
+`--threads N`, `--generate N`, `--prefill-repeat N`, `--no-write`. Nothing about
+the build is passed in: the backend, weight policy and thread count come from
+the binary's own report, the build type from the CMake cache beside it, and the
+power state from the OS. A result cannot claim a configuration it did not run.
 
 ## What is measured
 
@@ -109,4 +110,5 @@ count in `detail.decode_steps`; the presence of that field is what tells the
 two apart. The f4e17d7 baseline stays as the record of what was measured, but
 the comparable scalar, no-KV baseline is the one at 237311a.
 
-Phase: end of 2 (baseline), then every commit in 3+.
+Built at the end of Phase 2, so Phase 3 had a baseline to move; every
+performance claim since is a pair of results in `results/`.

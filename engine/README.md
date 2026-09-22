@@ -64,8 +64,9 @@ there rather than glibc, and the two disagree in the last bits.
     gpt2_web       Emscripten only: the browser's C API over Weights, Model and
                    KVCache, for web/demo/; see web/README.md
 
-All of them take `--threads N` (default 1) and read the weight file's header to
-decide fp32 or int8 -- never a flag. `--help` on any of them is current.
+The command-line tools take `--threads N` (default 1), and every tool reads the
+weight policy -- fp32, int8, int8-wte-o8 -- from the file itself, never from a
+flag. `--help` on any of them is current.
 
 `compare.py` is the authority. `ctest` checks that each kernel computes the
 right formula; `compare.py` checks the whole engine against the reference.
@@ -111,5 +112,6 @@ right formula; `compare.py` checks the whole engine against the reference.
   multiply and one rounding instead of `n_in` of them. `Matrix` carries
   whichever representation the file holds; above the kernels nothing branches.
 
-Phase: 4 complete. fp32 and int8 both ship; int4 was measured and rejected, see
-`reference/gptq.py`. Phase 5 has added the wasm_simd128 backend; `web/` has the rest.
+Three backends -- scalar, AVX2, wasm_simd128 -- and three weight policies --
+fp32, int8, int8-wte-o8 -- all oracle- or eval-validated. int4 was measured
+and rejected, see `reference/gptq.py`.
