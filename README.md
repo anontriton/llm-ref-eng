@@ -24,7 +24,7 @@ order. Each directory has its own README describing what lives there.
 | 1 oracle | done | `oracle/test_compare.py` |
 | 2 correct C++ | done | `oracle/compare.py`, `oracle/check_greedy.py`, `ctest` |
 | 3 perf | done | `bench/results/`, oracle re-run per commit |
-| 4 quantization | in progress | `eval/metrics.py`, `eval/results/` -- int8 done, int4 next |
+| 4 quantization | done | `eval/metrics.py`, `eval/results/` -- int8 ships, int4 rejected |
 | 5 WASM | -- | |
 | 6 docs | -- | |
 
@@ -122,6 +122,11 @@ layers' projections quantize. 497.8 MB to 243.3 MB.
 
 Speed, avx2, 8 threads: prefill 484 to 450 ms, decode 19.73 to 17.15 ms/token,
 1.14x end to end.
+
+int4 was implemented (`reference/gptq.py`) and rejected. GPTQ cuts the damage
+four-fold against round-to-nearest, 42.3685 to 37.8621 perplexity, and still
+misses every criterion -- decisive disagreement 1.562% against a limit of 0.5%,
+where int8 scored 0.000%. It lives in the reference and not in the engine.
 
 ## Findings
 
@@ -271,7 +276,7 @@ fp32 decode runs at about what this machine's memory will do. Every step down
 lands further below the limit, so saved bytes stop converting into saved time.
 Keeping `wte` in fp32 leaves it as 64% of what decode still streams.
 
-## Known limits going into int4
+## Known limits going into Phase 5
 
 - `Model::forward` computes logits for every position; prefill needs only the
   last row, and lm_head is 31% of prefill's arithmetic. Narrowing it changes

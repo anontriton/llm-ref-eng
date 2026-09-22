@@ -56,6 +56,10 @@ outright; `eval/metrics.py` is the authority instead. Use:
 GEMM, then AVX2, then threads) -> 4 quantization (int8, then int4) ->
 5 WASM -> 6 docs
 
+Phase 4 shipped int8 and declined int4 on measurement; see the exit criteria
+below. A phase's contents are a plan, not a promise that every item survives
+contact with its own acceptance criteria.
+
 Work strictly in phase order. Do not begin a phase before the previous one's
 exit criteria are met. See "Phase status" below for where we actually are.
 
@@ -127,7 +131,7 @@ and the abstraction layer is designed against that width.
 - [x] 1 oracle
 - [x] 2 correct C++
 - [x] 3 perf
-- [ ] 4 quantization
+- [x] 4 quantization
 - [ ] 5 WASM
 - [ ] 6 docs
 
@@ -182,3 +186,31 @@ carrying `detail.decode_steps` use the current accounting. And `Model::forward`
 computes logits for every position, which prefill does not need -- only the
 last row feeds generation, and lm_head is 31% of prefill's arithmetic. It was
 left alone because it changes the forward contract the oracle dumps depend on.
+
+Phase 4 exit criteria, met: the eval harness exists and is validated against
+something other than itself, int8 ships, int4 was implemented and rejected.
+
+int8 is weight-only, symmetric, per output channel, on the twelve layers'
+projections. Against the fp32 engine on the pinned WikiText-2 slice:
+perplexity x0.99844, top-1 97.480%, mean KL 0.001168, p99 KL 0.006155,
+decisive disagreement 0 of 256. Weight file 497.8 MB -> 243.3 MB, 1.14x end to
+end. `wte` stays fp32: quantizing it as well compresses to 127.7 MB and still
+passes on perplexity, at +1.54%, while changing 17% of argmaxes and moving the
+distribution 35x further. Perplexity alone would have shipped that, which is
+why there is more than one metric.
+
+int4 is implemented in `reference/gptq.py` and is not in the engine. GPTQ cuts
+the damage four-fold against round-to-nearest -- 42.3685 to 37.8621 perplexity
+at group 64 -- and still misses every criterion: ratio x1.04198, top-1 86.106%,
+mean KL 0.041376, decisive disagreement 1.562%. That last number is the reason.
+It was added during int8 to stop a raw agreement rate from counting a coin-flip
+as damage, and there it cleared the quantizer at 0.000%; at int4 it says the
+engine overwrites answers the fp32 model was sure about. Activation ordering
+improves three of the metrics and makes that one worse. Four bits does not fit
+a 124M model, and no threshold should be moved to pretend otherwise.
+
+The thresholds in `eval/metrics.py` were revised once, on evidence, the way the
+fp32 tolerance was in Phase 2 -- top-1 from a guessed 98% to a measured 97%,
+after the disagreements were shown to sit where fp32's own top-1/top-2 margin
+is 0.00093 against 0.10553 elsewhere. The int4 rejection above is what that
+revision bought the right to say.
