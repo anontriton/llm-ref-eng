@@ -56,16 +56,22 @@ std::string to_hex(const unsigned char* p, size_t n) {
 }  // namespace
 
 Weights Weights::load(const std::string& path) {
-  Weights w;
-  w.path_ = path;
-
   std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) fail("cannot open " + path + " (run scripts/convert_weights.py)");
   const std::streamsize size = in.tellg();
   if (size < static_cast<std::streamsize>(kHeaderFixed)) fail(path + ": file is too small");
   in.seekg(0);
-  w.blob_.resize(static_cast<size_t>(size));
-  if (!in.read(reinterpret_cast<char*>(w.blob_.data()), size)) fail(path + ": short read");
+  std::vector<unsigned char> blob(static_cast<size_t>(size));
+  if (!in.read(reinterpret_cast<char*>(blob.data()), size)) fail(path + ": short read");
+  return from_blob(std::move(blob), path);
+}
+
+Weights Weights::from_blob(std::vector<unsigned char> blob, const std::string& name) {
+  Weights w;
+  w.path_ = name;
+  w.blob_ = std::move(blob);
+  const std::string& path = w.path_;
+  if (w.blob_.size() < kHeaderFixed) fail(path + ": file is too small");
 
   const unsigned char* b = w.blob_.data();
   if (std::memcmp(b, kMagic, sizeof(kMagic)) != 0) fail(path + ": bad magic");

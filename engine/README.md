@@ -61,6 +61,8 @@ there rather than glibc, and the two disagree in the last bits.
     gpt2_eval      per-position nll, top-1 and sampled logits -> eval/metrics.py
     gpt2_kernelbench  per-shape matmul timings on the real weights; bench/
                    says whether the engine got faster, this says which kernel
+    gpt2_web       Emscripten only: the browser's C API over Weights, Model and
+                   KVCache, for web/demo/; see web/README.md
 
 All of them take `--threads N` (default 1) and read the weight file's header to
 decide fp32 or int8 -- never a flag. `--help` on any of them is current.
@@ -89,7 +91,7 @@ right formula; `compare.py` checks the whole engine against the reference.
   the output and nothing reduces across a tile boundary, so thread count is not
   a numerical parameter: 615 tensors are bit-identical at 1, 3 and 8 threads.
   Serial by default; at `count() == 1` there is no pool and no locks.
-- `tools/` -- five executables, above.
+- `tools/` -- five executables, above, and the browser's gpt2_web.
 
 ## Things that will bite
 

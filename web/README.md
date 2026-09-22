@@ -3,11 +3,14 @@
 Compiles the same `engine/` sources to WebAssembly. No engine fork: if the web
 build needs a change, it goes into the engine behind the backend abstraction.
 
-Phase: 5, steps 1-3 of 4 done. The scalar and wasm_simd128 backends both build
-to wasm and pass the oracle under Node, bit-identical to each other and
-benchmarked beside native. Of step 4, the browser's weight file (129 MB) and
-the JavaScript tokenizer are done; the demo page is not, and `demo/` is still
-an empty placeholder.
+Phase: 5, all four steps done. The scalar and wasm_simd128 backends build to
+wasm and pass the oracle under Node, bit-identical to each other and
+benchmarked beside native; the browser gets a 129 MB weight file, a
+hand-written tokenizer, and a demo page that runs the engine in a worker.
+
+    web/build.sh wasm_simd128
+    .venv/bin/python scripts/quantize_weights.py --wte-outliers 8
+    web/serve.sh                     # -> http://localhost:8000/web/demo/
 
     web/build.sh                     # -> web/build/engine-scalar/
     web/build.sh wasm_simd128        # -> web/build/engine-wasm_simd128/
@@ -266,6 +269,44 @@ slower -- 9.78 to 7.93 tok/s native -- because unvectorized int8 is already
 slower than fp32 there, and now lm_head is int8 too; no shipping build is
 scalar.
 
+## The demo
+
+`web/demo/index.html` and `web/demo/worker.js`, over three shared modules --
+`web/tokenizer.js`, `web/engine.js` (the wasm C API wrapped), `web/sampling.js`
+-- and `engine/tools/gpt2_web.cpp`, the browser's entry point: a thin C API
+over Weights, Model and KVCache, built as an ES module for browser workers and
+Node alike. The Node-only link flags (NODERAWFS, EXIT_RUNTIME) moved off the
+global options onto the command-line tools, so the web module has none.
+
+The weight file is streamed straight into wasm memory as it downloads --
+`Weights::from_blob()` parses bytes already in memory, and `load(path)` is now
+that after reading a file -- so 129 MB is never held twice, and the page has a
+real progress bar. Everything slow runs in the worker; Stop works between
+tokens.
+
+    node web/test_web.mjs
+
+holds `gpt2_web.mjs`, through `web/engine.js`, to `gpt2_generate.js`: weights
+streamed in 1 MiB chunks, 50 greedy ids on three oracle prompts, identical on
+both the fp32 file (which chains to `oracle/check_greedy.py`) and
+`int8-wte-o8`. Also: seeded sampling repeats, and one token past the 1024
+context is an error with a reason, after which the engine still works.
+
+Then the page itself, in headless Chrome driven over the DevTools protocol:
+greedy on "The capital of France is" puts on screen exactly the text
+`gpt2_generate`'s ids decode to; Stop ends a 400-token sampling run cleanly;
+no console errors; dark mode and a 390 px viewport lay out without overflow;
+and through a server throttled to 30 MB/s the progress bar climbs to 129.3 MB
+over 4.3 s. From a local server the load takes 250 ms.
+
+In Chrome, single-threaded: prefill 94 ms for 5 tokens, 306 ms for 17;
+decode 21 ms/token, about 47 tokens/s -- a little faster than the same wasm
+under Node (23.5 ms).
+
+Greedy (temperature 0) is the validated mode and is exactly the engine's
+output. Sampling -- temperature and top-k, 40 by default as in GPT-2's own
+samples -- is a demo feature, seeded so a run repeats.
+
 ## Suggested order
 
 1. **Done.** Build the *scalar* backend to wasm, dump, and run
@@ -276,4 +317,4 @@ scalar.
    within tolerance.
 3. **Done.** Benchmark with `bench/run.py`, which already records the backend the binary
    reports rather than a flag.
-4. Then the demo page, and the size question above.
+4. **Done.** The demo page, and the size question above.

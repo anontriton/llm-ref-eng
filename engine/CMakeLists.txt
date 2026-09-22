@@ -57,11 +57,13 @@ message(STATUS "gpt2: backend ${GPT2_BACKEND}")
 
 # Phase 5: the same sources under Emscripten, configured with emcmake (see
 # web/build.sh). Every tool becomes a .js + .wasm pair run by Node, which the
-# toolchain also registers as the ctest emulator.
+# toolchain also registers as the ctest emulator; tools/gpt2_web is the one
+# built for the browser.
 #
 # - NODERAWFS: the program sees the real filesystem, so --weights, --runs and
 #   --out mean exactly what they mean natively and dumps land where
-#   oracle/compare.py can read them. Node only; the browser build will differ.
+#   oracle/compare.py can read them. Node only, so it is not global: the Node
+#   tools and tests take GPT2_NODE_LINK_OPTIONS, and gpt2_web does not.
 # - Memory: the fp32 weight file alone is 498 MB, read into one buffer. wasm32
 #   tops out at 4 GB.
 # - Exceptions: Emscripten turns catching off by default, and every tool
@@ -73,11 +75,10 @@ if(EMSCRIPTEN)
   add_compile_options(-fwasm-exceptions)
   add_link_options(
     -fwasm-exceptions
-    -sNODERAWFS=1
     -sALLOW_MEMORY_GROWTH=1
     -sMAXIMUM_MEMORY=4GB
-    -sSTACK_SIZE=1MB
-    -sEXIT_RUNTIME=1)
+    -sSTACK_SIZE=1MB)
+  set(GPT2_NODE_LINK_OPTIONS -sNODERAWFS=1 -sEXIT_RUNTIME=1)
 endif()
 
 find_package(Threads REQUIRED)

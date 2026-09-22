@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPT-2 in the Browser</title>
+<meta name="description" content="GPT-2 124M running locally in WebAssembly: a hand-written C++ engine, validated layer by layer against a PyTorch reference.">
+<style>
+  :root {
+    --bg: #f7f6f3;
+    --panel: #ffffff;
+    --ink: #1d1c1a;
+    --muted: #6b6861;
+    --faint: #e6e3dc;
+    --accent: #2f5d8a;
+    --accent-ink: #ffffff;
+    --prompt: #8a857a;
+    --warn: #9a3b1f;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514;
+      --panel: #1e1e1c;
+      --ink: #ebe8e1;
+      --muted: #9b978d;
+      --faint: #2e2d2a;
+      --accent: #7fa8d6;
+      --accent-ink: #10151b;
+      --prompt: #8d897f;
+      --warn: #e58a6a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 var(--sans);
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 24px; max-width: 64ch; }
+
+  .panel {
+    background: var(--panel); border: 1px solid var(--faint); border-radius: 10px;
+    padding: 16px;
+  }
+  .status { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; font-size: 13px; color: var(--muted); }
+  .bar { flex: 1; height: 6px; background: var(--faint); border-radius: 3px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width 120ms linear; }
+  .status.ready .bar { display: none; }
+  .status .msg { font-variant-numeric: tabular-nums; }
+  .status.error .msg { color: var(--warn); }
+
+  label.field { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  textarea {
+    width: 100%; min-height: 84px; resize: vertical; padding: 10px 12px;
+    font: 15px/1.5 var(--sans); color: var(--ink); background: var(--bg);
+    border: 1px solid var(--faint); border-radius: 8px;
+  }
+  textarea:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 14px; }
+  .examples button {
+    font: 12px var(--sans); color: var(--muted); background: transparent;
+    border: 1px solid var(--faint); border-radius: 999px; padding: 3px 10px; cursor: pointer;
+  }
+  .examples button:hover { color: var(--ink); border-color: var(--muted); }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+  .controls .knob { display: flex; flex-direction: column; }
+  .controls input {
+    width: 88px; padding: 6px 8px; font: 14px var(--mono); color: var(--ink);
+    background: var(--bg); border: 1px solid var(--faint); border-radius: 6px;
+  }
+  .controls .spacer { flex: 1; }
+  button.primary, button.secondary {
+    font: 600 14px var(--sans); padding: 8px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); }
+  button.secondary { background: transparent; color: var(--ink); border-color: var(--faint); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .output {
+    margin-top: 16px; min-height: 160px; white-space: pre-wrap; overflow-wrap: anywhere;
+    font: 15px/1.6 var(--sans);
+  }
+  .output .p { color: var(--prompt); }
+  .output .caret {
+    display: inline-block; width: 7px; height: 1.05em; vertical-align: text-bottom;
+    background: var(--accent); margin-left: 1px; animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .output .end { color: var(--muted); font-size: 12px; margin-left: 6px; }
+
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px;
+    margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--faint);
+  }
+  .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat .v { font: 15px var(--mono); font-variant-numeric: tabular-nums; }
+
+  footer { margin-top: 20px; font-size: 12px; color: var(--muted); max-width: 70ch; }
+  footer code { font-family: var(--mono); }
+</style>
+</head>
+<body>
+<main>
+  <h1>GPT-2 in the browser</h1>
+  <p class="lede">GPT-2 124M running entirely on this machine, in WebAssembly. The engine is
+    hand-written C++, checked layer by layer against a PyTorch reference, compiled to
+    wasm SIMD. Nothing leaves the page.</p>
+
+  <div class="panel">
+    <div class="status" id="status">
+      <span class="msg" id="status-msg">Starting…</span>
+      <div class="bar"><div id="bar"></div></div>
+    </div>
+
+    <label class="field" for="prompt">Prompt</label>
+    <textarea id="prompt" spellcheck="false">The history of computing is often told as a story of hardware, but</textarea>
+    <div class="examples" id="examples"></div>
+
+    <div class="controls">
+      <div class="knob"><label class="field" for="max">New tokens</label><input id="max" type="number" min="1" max="1023" value="80"></div>
+      <div class="knob"><label class="field" for="temp">Temperature</label><input id="temp" type="number" min="0" max="2" step="0.1" value="0.8"></div>
+      <div class="knob"><label class="field" for="topk">Top-k</label><input id="topk" type="number" min="1" max="50257" value="40"></div>
+      <div class="knob"><label class="field" for="seed">Seed</label><input id="seed" type="number" min="0" value="42"></div>
+      <div class="spacer"></div>
+      <button class="secondary" id="stop" disabled>Stop</button>
+      <button class="primary" id="go" disabled>Generate</button>
+    </div>
+
+    <div class="output" id="output" aria-live="polite"></div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">Prompt</div><div class="v" id="s-prompt">–</div></div>
+      <div class="stat"><div class="k">Prefill</div><div class="v" id="s-prefill">–</div></div>
+      <div class="stat"><div class="k">Decode</div><div class="v" id="s-decode">–</div></div>
+      <div class="stat"><div class="k">Context</div><div class="v" id="s-ctx">–</div></div>
+      <div class="stat"><div class="k">Engine</div><div class="v" id="s-engine">–</div></div>
+    </div>
+  </div>
+
+  <footer>Temperature 0 is greedy decoding, the mode the engine is validated in against the
+    reference. Weights: <code>int8-wte-o8</code>, 129 MB, int8 with eight columns of the
+    embedding kept in fp32. Single-threaded.</footer>
+</main>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+
+const EXAMPLES = [
+  "The history of computing is often told as a story of hardware, but",
+  "In a shocking finding, scientists discovered a herd of unicorns living in a remote valley",
+  "The capital of France is",
+  "def fibonacci(n):",
+  "Once upon a time,",
+];
+for (const text of EXAMPLES) {
+  const b = document.createElement("button");
+  b.textContent = text.length > 40 ? text.slice(0, 38) + "…" : text;
+  b.title = text;
+  b.onclick = () => { $("prompt").value = text; };
+  $("examples").append(b);
+}
+
+let running = false;
+let nCtx = 0;
+let genText = null;
+const caret = document.createElement("span");
+caret.className = "caret";
+
+function status(msg, kind = "") {
+  $("status").className = "status " + kind;
+  $("status-msg").textContent = msg;
+}
+function setRunning(on) {
+  running = on;
+  $("go").disabled = on;
+  $("stop").disabled = !on;
+}
+const mb = (n) => (n / 1e6).toFixed(1);
+const ms = (n) => n >= 1000 ? (n / 1000).toFixed(2) + " s" : n.toFixed(0) + " ms";
+
+worker.onmessage = ({ data: m }) => {
+  if (m.type === "progress") {
+    status(`Downloading weights  ${mb(m.loaded)} / ${mb(m.total)} MB`);
+    $("bar").style.width = (100 * m.loaded / m.total).toFixed(1) + "%";
+  } else if (m.type === "ready") {
+    status(`Ready. ${mb(m.weightsBytes)} MB loaded in ${ms(m.loadMs)}.`, "ready");
+    $("s-engine").textContent = `${m.backend}, ${m.policy}`;
+    nCtx = m.nCtx;
+    $("go").disabled = false;
+  } else if (m.type === "start") {
+    $("s-prompt").textContent = `${m.promptTokens} tokens`;
+  } else if (m.type === "text") {
+    genText.textContent += m.text;
+  } else if (m.type === "done") {
+    caret.remove();
+    const why = { endoftext: "end of text", length: "", context: "context full", stopped: "stopped" }[m.reason];
+    if (why) {
+      const end = document.createElement("span");
+      end.className = "end";
+      end.textContent = `[${why}]`;
+      $("output").append(end);
+    }
+    $("s-prefill").textContent = ms(m.prefillMs);
+    // Per-token decode time, and its rate -- decode only, not end to end,
+    // which is a different number from bench/'s tokens_per_sec.
+    $("s-decode").textContent = m.decodeMs
+      ? `${m.decodeMs.toFixed(1)} ms/tok · ${(1000 / m.decodeMs).toFixed(0)}/s` : "–";
+    $("s-ctx").textContent = `${m.promptTokens + m.generated} / ${nCtx}`;
+    setRunning(false);
+    status(`Done. ${m.generated} tokens generated.`, "ready");
+  } else if (m.type === "error") {
+    caret.remove();
+    setRunning(false);
+    status(m.message, "error ready");
+    $("go").disabled = false;
+  }
+};
+worker.onerror = (e) => status(`Worker failed: ${e.message}`, "error ready");
+
+$("go").onclick = () => {
+  const prompt = $("prompt").value;
+  const out = $("output");
+  out.replaceChildren();
+  const p = document.createElement("span");
+  p.className = "p";
+  p.textContent = prompt;
+  genText = document.createElement("span");
+  out.append(p, genText, caret);
+  for (const id of ["s-prompt", "s-prefill", "s-decode", "s-ctx"]) $(id).textContent = "–";
+  setRunning(true);
+  status("Generating…", "ready");
+  worker.postMessage({
+    type: "generate", prompt,
+    maxTokens: Math.max(1, Number($("max").value) || 80),
+    temperature: Math.max(0, Number($("temp").value) || 0),
+    topK: Math.max(1, Number($("topk").value) || 40),
+    seed: Number($("seed").value) >>> 0,
+  });
+};
+$("stop").onclick = () => worker.postMessage({ type: "stop" });
+$("prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !running && !$("go").disabled) $("go").click();
+});
+
+worker.postMessage({ type: "load" });
+</script>
+</body>
+</html>

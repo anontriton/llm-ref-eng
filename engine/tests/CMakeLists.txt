@@ -5,6 +5,7 @@ foreach(test_src ${GPT2_TEST_SOURCES})
   get_filename_component(test_name "${test_src}" NAME_WE)
   add_executable(${test_name} "${test_src}")
   target_link_libraries(${test_name} PRIVATE gpt2)
+  target_link_options(${test_name} PRIVATE ${GPT2_NODE_LINK_OPTIONS})
   # Tests that need generated artifacts (the converted weight file) locate
   # them from here rather than depending on the working directory.
   target_compile_definitions(${test_name} PRIVATE

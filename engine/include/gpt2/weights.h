@@ -82,6 +82,12 @@ class Weights {
   // the whole class of "the logits are slightly wrong" bugs.
   static Weights load(const std::string& path);
 
+  // The same parse over bytes already in memory, which the Weights takes
+  // ownership of. load() is this after reading the file; the browser build
+  // streams the download straight into `blob` instead, since it has no file
+  // to read. `name` stands in for the path in path() and in error messages.
+  static Weights from_blob(std::vector<unsigned char> blob, const std::string& name);
+
   const Config& config() const { return config_; }
   const std::string& source_sha256() const { return source_sha256_; }
   const std::string& path() const { return path_; }
