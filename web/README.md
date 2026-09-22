@@ -62,12 +62,21 @@ which is part of why rejecting it cost less than it sounds.
 Nobody downloads 243 MB for a demo. Options not yet evaluated, roughly in
 order of how much they change:
 
-1. Quantize `wte` for lm_head only and keep fp32 for the embedding lookup.
-   The lookup reads *one row* per token, 3 KB; lm_head streams the whole
-   table. Phase 4 never separated the two uses, so it is unknown which one the
-   damage came from. If it is the embedding side, this recovers 115 MB for
-   free. This is the cheapest experiment and the one to run first --
-   `reference/quant_sim.py` can test it without touching C++.
+1. **Measured -- `reference/wte_sim.py`.** The first version of this item
+   proposed int8 for lm_head and fp32 for the lookup, and could not have saved
+   anything: any token can be looked up, so the fp32 table would still ship.
+   Separating the two uses was still the right diagnosis, and it came out the
+   other way round. The embedding takes int8 for free; **all** the damage is
+   lm_head, because ln_f's output has a few huge hidden dims (dim 496 averages
+   |x| = 201, median 0.35) that multiply the int8 error in those columns of
+   wte. Two formats pass every `eval/metrics.py` gate in simulation:
+
+       int8 wte + 8 outlier columns fp32   129.3 MB   top-1 97.41%   decisive 0.024%
+       fp16 wte                            166.1 MB   top-1 97.53%   decisive 0.024%
+
+   against 243.3 MB shipping today. Neither is in the engine yet; the
+   simulation predicted int8 to five decimals last time, but `eval/metrics.py`
+   on the engine is the authority, not this.
 2. A smaller context or a trimmed vocabulary for the demo specifically.
 3. Streaming the weights and starting generation before the tail arrives.
 4. Accepting a long first load with a service worker cache.
