@@ -21,7 +21,10 @@ startup and weight loading into the measurement.
 A speedup claim is only as good as the pair of results it compares, so the
 fields that would invalidate such a comparison -- commit, build type, backend,
 thread count, prompt length, generate count -- are all recorded, and a run on a
-a dirty working tree is marked dirty and does not count as a result.
+a dirty working tree is marked dirty and does not count as a result. The same
+goes for a machine that is throttling itself: machine.power records the AC
+state, platform profile and CPU governor, and a run on battery or under a
+low-power profile is named ...-lowpower.json and does not count either.
 """
 
 from __future__ import annotations
@@ -89,6 +92,40 @@ def cpu_name() -> str:
     return platform.processor() or platform.machine() or "unknown"
 
 
+def read_sys(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def power_state() -> dict:
+    """What the OS is doing to the clock. A laptop on battery under a
+    low-power profile ran this benchmark 2.4x slower across the board,
+    weights loading included, and nothing else in the result said so.
+
+    ac is None on a machine with no mains supply to report, i.e. a desktop.
+    """
+    ac = None
+    for supply in Path("/sys/class/power_supply").glob("*"):
+        if read_sys(supply / "type") == "Mains":
+            online = read_sys(supply / "online")
+            ac = (online == "1") if ac is None else (ac or online == "1")
+    cpu0 = Path("/sys/devices/system/cpu/cpu0/cpufreq")
+    return {
+        "ac": ac,
+        "platform_profile": read_sys(Path("/sys/firmware/acpi/platform_profile")),
+        "governor": read_sys(cpu0 / "scaling_governor"),
+        "energy_performance_preference":
+            read_sys(cpu0 / "energy_performance_preference"),
+    }
+
+
+def throttled(power: dict) -> bool:
+    return power["ac"] is False or power["platform_profile"] in (
+        "low-power", "quiet", "cool")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tool", type=Path, default=DEFAULT_TOOL)
@@ -114,6 +151,11 @@ def main() -> int:
         return 1
 
     sha, dirty = git_commit()
+    power = power_state()
+    lowpower = throttled(power)
+    if lowpower:
+        print(f"WARNING: machine is throttled ({power}). This run is recorded "
+              "as lowpower and does not count as a result.", file=sys.stderr)
     if dirty:
         print("WARNING: working tree is dirty. Per bench/README.md this run "
               "is recorded as dirty and does not count as a result.",
@@ -186,6 +228,7 @@ def main() -> int:
             "platform": platform.platform(),
             "compiler": compiler_version(wasm),
             "runtime": node_version() if wasm else "native",
+            "power": power,
         },
     }
 
@@ -210,6 +253,8 @@ def main() -> int:
         parts.append(measured["policy"])
     if args.label:
         parts.append(args.label)
+    if lowpower:
+        parts.append("lowpower")
     if dirty:
         parts.append("dirty")
     out = RESULTS / ("-".join(parts) + ".json")

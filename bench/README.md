@@ -57,12 +57,23 @@ Every run emits one JSON file into `results/`, committed to the repo:
                    "decode_total_ms": 0.0, "weights_load_ms": 0.0 },
       "output":  { "generated_ids": [ ... ] },
       "machine": { "cpu": "...", "cores": 8, "platform": "...",
-                   "compiler": "..." }
+                   "compiler": "...", "runtime": "native|node vX",
+                   "power": { "ac": true, "platform_profile": "performance",
+                              "governor": "...",
+                              "energy_performance_preference": "..." } }
     }
 
 Results are commit-tagged so a speedup claim can always be traced back to the
 change that produced it. A benchmark run on a dirty tree is recorded as dirty,
 is named `...-dirty.json`, and does not count as a result.
+
+The same holds for a throttled machine: on battery, or under a `low-power`
+platform profile, a run is named `...-lowpower.json` and does not count. This
+is not hypothetical. The first Phase 5 matrix was measured on battery at
+`low-power`, with the clock at 1.27 of 4.2 GHz, and came out 2.4x slower in
+every metric including weight loading -- while decoding exactly the Phase 3
+tokens, so nothing but the clock had changed. Nothing in the JSON said so; now
+`machine.power` does. Earlier results predate the field.
 
 `output.generated_ids` is not a metric. It is a tripwire: an optimization that
 changes what the engine decodes has changed the program, and the timings above

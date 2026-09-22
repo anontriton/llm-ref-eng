@@ -5,8 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Into the cache, not just the current scope: bench/run.py reads the build type
+# from CMakeCache.txt, and a build configured without -DCMAKE_BUILD_TYPE used to
+# leave it empty there and be recorded as "unknown".
 if(NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE RelWithDebInfo)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
 # Determinism beats speed until Phase 3: no fast-math, no reassociation.
