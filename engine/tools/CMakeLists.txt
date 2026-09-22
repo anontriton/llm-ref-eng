@@ -13,3 +13,8 @@ target_link_libraries(gpt2_bench PRIVATE gpt2)
 # Phase 4: perplexity / top-1 / KL dumps. eval/metrics.py judges them.
 add_executable(gpt2_eval gpt2_eval.cpp)
 target_link_libraries(gpt2_eval PRIVATE gpt2)
+
+# Per-shape matmul timings, for deciding what to change. bench/ says whether
+# the engine got faster; this says which kernel did.
+add_executable(gpt2_kernelbench gpt2_kernelbench.cpp)
+target_link_libraries(gpt2_kernelbench PRIVATE gpt2)

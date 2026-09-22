@@ -209,7 +209,11 @@ def main() -> int:
     parser.add_argument("--window", type=int, default=512)
     parser.add_argument("--windows", type=int, default=8)
     parser.add_argument("--save-npz", type=Path, default=None,
-                        help="write codes and scales for scripts/ to pack")
+                        help="write the int4 codes and per-group scales. "
+                             "Nothing in the repo reads them -- int4 was "
+                             "measured and not shipped -- so this is the "
+                             "starting point for anyone revisiting that, not "
+                             "a step in a working pipeline")
     parser.add_argument("--compare", action="store_true",
                         help="also report top-1 agreement and KL against the "
                              "unquantized reference, as eval/metrics.py would")

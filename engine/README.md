@@ -53,8 +53,10 @@ that property is the point of the layer.
     gpt2_generate  greedy decode; --kv-cache selects the cached path
     gpt2_bench     prefill and decode timings -> bench/run.py
     gpt2_eval      per-position nll, top-1 and sampled logits -> eval/metrics.py
+    gpt2_kernelbench  per-shape matmul timings on the real weights; bench/
+                   says whether the engine got faster, this says which kernel
 
-All four take `--threads N` (default 1) and read the weight file's header to
+All of them take `--threads N` (default 1) and read the weight file's header to
 decide fp32 or int8 -- never a flag. `--help` on any of them is current.
 
 `compare.py` is the authority. `ctest` checks that each kernel computes the
@@ -81,7 +83,7 @@ right formula; `compare.py` checks the whole engine against the reference.
   the output and nothing reduces across a tile boundary, so thread count is not
   a numerical parameter: 615 tensors are bit-identical at 1, 3 and 8 threads.
   Serial by default; at `count() == 1` there is no pool and no locks.
-- `tools/` -- four executables, above.
+- `tools/` -- five executables, above.
 
 ## Things that will bite
 

@@ -3,8 +3,8 @@
 Compiles the same `engine/` sources to WebAssembly. No engine fork: if the web
 build needs a change, it goes into the engine behind the backend abstraction.
 
-- `build.sh`    emcc invocation
-- `demo/`       demo page (tokenizer + generation UI)
+Nothing here is written yet. `demo/` is an empty placeholder and there is no
+`build.sh`; the plan below is the whole of it.
 
 Phase: 5, not started. Requires the Emscripten SDK (`emcc`), **not installed**.
 
