@@ -3,10 +3,12 @@
 Compiles the same `engine/` sources to WebAssembly. No engine fork: if the web
 build needs a change, it goes into the engine behind the backend abstraction.
 
-Phase: 5, step 1 of 4 done -- the scalar backend builds to wasm and passes
-the oracle under Node. `demo/` is still an empty placeholder.
+Phase: 5, steps 1 and 2 of 4 done -- the scalar and wasm_simd128 backends
+both build to wasm and pass the oracle under Node, and the two are bit-identical
+to each other. `demo/` is still an empty placeholder.
 
     web/build.sh                     # -> web/build/engine-scalar/
+    web/build.sh wasm_simd128        # -> web/build/engine-wasm_simd128/
     node web/build/engine-scalar/tools/gpt2_dump.js --out web/build/dumps
     .venv/bin/python oracle/compare.py web/build/dumps/manifest.json
     .venv/bin/python oracle/check_greedy.py \
@@ -118,12 +120,35 @@ it means the engine carrying its own `tanh` and `exp` built from `+ - * /`,
 re-validated against the oracle, since glibc's `tanhf` is the one being
 matched today.
 
+## Step 2 result: wasm_simd128
+
+`src/backend_wasm_simd128.cpp` is the AVX2 backend at half the width: the
+eight accumulator lanes are two v128, `lo` and `hi`, and the reduction tree is
+the scalar one step for step. Only that file gets `-msimd128`. The linked
+module has no relaxed-simd, no fused multiply-add and no `f32x4.max`, which is
+checked with `wasm-dis`, not assumed.
+
+    vs wasm scalar, sha256    615/615 identical; 615/615 via --kv-cache
+    vs wasm scalar, compare   0.0% of budget, abs 0.000e+00
+    int8, gpt2_eval           nll, top1, 64 rows of logits byte-identical
+    oracle/compare.py         615/615 pass, 58.1% -- the scalar build's figure
+    check_greedy.py           50/50, with and without --kv-cache
+    ctest                     6/6 pass, test_threading disabled
+
+The fp32 oracle never calls `dot_i8` or `axpy_i8`, so the int8 kernels are
+proved by `gpt2_eval` on `gpt2-124m-int8.bin` in both builds instead, two
+512-token windows. Speed, single-threaded under Node, as a sanity check rather
+than a benchmark:
+
+    gpt2_dump, all 5 runs     scalar 21 s   wasm_simd128  8.5 s   2.5x
+    gpt2_eval int8, 2 windows scalar 221 s  wasm_simd128  59 s    3.7x
+
 ## Suggested order
 
 1. **Done.** Build the *scalar* backend to wasm, dump, and run
    `oracle/compare.py` on it. That is the whole Phase 2 proof, unchanged, and
    it separates "does it compile and run" from "is the SIMD right".
-2. Add `src/backend_wasm_simd128.cpp` against `backend.h`, and hold it to the
+2. **Done.** Add `src/backend_wasm_simd128.cpp` against `backend.h`, and hold it to the
    same standard AVX2 met: 615 tensors bit-identical to scalar, not merely
    within tolerance.
 3. Benchmark with `bench/run.py`, which already records the backend the binary

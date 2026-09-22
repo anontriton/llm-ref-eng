@@ -32,6 +32,7 @@ From the repo root:
 
     cmake -S engine -B engine/build       -DGPT2_BACKEND=scalar   # default
     cmake -S engine -B engine/build-avx2  -DGPT2_BACKEND=avx2
+    web/build.sh wasm_simd128             # emcmake; see web/README.md
 
 Exactly one `src/backend_*.cpp` compiles -- they define the same symbols -- and
 only that translation unit gets ISA flags, so the kernels stay baseline and
@@ -44,6 +45,11 @@ and no `-mfma`. Fusing rounds once where scalar rounds twice, which would put
 the backends in disagreement -- and wasm_simd128 in Phase 5 has no FMA to
 offer. All 615 oracle tensors are bit-identical between the two backends, and
 that property is the point of the layer.
+
+wasm_simd128 holds the same line against the scalar backend built with
+Emscripten: two v128 per eight lanes, `-msimd128` on that file only, 615 of
+615 identical. Not against *native* scalar -- GELU's `tanh` comes from musl
+there rather than glibc, and the two disagree in the last bits.
 
 ## Tools
 
@@ -100,4 +106,4 @@ right formula; `compare.py` checks the whole engine against the reference.
   whichever representation the file holds; above the kernels nothing branches.
 
 Phase: 4 complete. fp32 and int8 both ship; int4 was measured and rejected, see
-`reference/gptq.py`. Next is a wasm_simd128 backend beside the other two.
+`reference/gptq.py`. Phase 5 has added the wasm_simd128 backend; `web/` has the rest.

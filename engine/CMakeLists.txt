@@ -15,8 +15,8 @@ add_compile_options(-Wall -Wextra -fno-fast-math)
 # Which SIMD backend to build. Exactly one backend_*.cpp is compiled -- they
 # define the same symbols -- and the kernels never name the choice, they just
 # call gpt2::backend::*.
-set(GPT2_BACKEND "scalar" CACHE STRING "SIMD backend: scalar or avx2")
-set_property(CACHE GPT2_BACKEND PROPERTY STRINGS scalar avx2)
+set(GPT2_BACKEND "scalar" CACHE STRING "SIMD backend: scalar, avx2 or wasm_simd128")
+set_property(CACHE GPT2_BACKEND PROPERTY STRINGS scalar avx2 wasm_simd128)
 
 file(GLOB GPT2_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 list(FILTER GPT2_SOURCES EXCLUDE REGEX "/backend_[^/]*\\.cpp$")
@@ -37,6 +37,17 @@ list(APPEND GPT2_SOURCES "${GPT2_BACKEND_SOURCE}")
 if(GPT2_BACKEND STREQUAL "avx2")
   set_source_files_properties("${GPT2_BACKEND_SOURCE}" PROPERTIES
     COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
+endif()
+
+# wasm_simd128 has no FMA to contract into, but the flag says why the backend
+# agrees with scalar instead of leaving it to the instruction set. No
+# -mrelaxed-simd: its fused multiply-add rounds however the host likes.
+if(GPT2_BACKEND STREQUAL "wasm_simd128")
+  if(NOT EMSCRIPTEN)
+    message(FATAL_ERROR "GPT2_BACKEND=wasm_simd128 needs an Emscripten build: web/build.sh wasm_simd128")
+  endif()
+  set_source_files_properties("${GPT2_BACKEND_SOURCE}" PROPERTIES
+    COMPILE_OPTIONS "-msimd128;-ffp-contract=off")
 endif()
 
 message(STATUS "gpt2: backend ${GPT2_BACKEND}")
