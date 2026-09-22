@@ -22,7 +22,7 @@ Layout (little-endian throughout):
     u8      source_sha256[32]                sha256 of model.safetensors
     entry[] n_tensors x 128 bytes            fixed stride, see ENTRY_FORMAT
     pad     to a 64-byte boundary
-    data    contiguous float32, row-major
+    data    contiguous, row-major; each tensor float32, int8 or int32
 
 The source checksum travels inside the file so the engine can stamp it into its
 own dump manifest without ever seeing the original checkpoint. That is what lets
@@ -56,11 +56,14 @@ MAX_DIMS = 4
 ENTRY_SIZE = 128
 DTYPE_F32 = 0
 DTYPE_I8 = 1
+# Indices, not weights: the columns of wte held back from int8 (Phase 5).
+DTYPE_I32 = 2
 
 # Header word 4, describing the file as a whole rather than one tensor.
 QUANT_NONE = 0
 QUANT_INT8_PER_CHANNEL = 1
-DTYPE_SIZE = {DTYPE_F32: 4, DTYPE_I8: 1}
+DTYPE_SIZE = {DTYPE_F32: 4, DTYPE_I8: 1, DTYPE_I32: 4}
+NP_DTYPE = {DTYPE_F32: np.float32, DTYPE_I8: np.int8, DTYPE_I32: np.int32}
 HEADER_FIXED = 8 + 16 + 32 + 32          # magic + counts + config + sha256
 DATA_ALIGN = 64
 
@@ -183,7 +186,9 @@ def write_bin(out: Path, cfg, tensors: dict[str, np.ndarray], source_sha: bytes,
 
         entry = bytearray()
         entry += raw_name.ljust(NAME_FIELD, b"\0")
-        dtype = DTYPE_I8 if a.dtype == np.int8 else DTYPE_F32
+        dtype = next((k for k, v in NP_DTYPE.items() if a.dtype == v), None)
+        if dtype is None:
+            raise SystemExit(f"{name}: no file dtype for {a.dtype}")
         entry += struct.pack("<II", a.ndim, dtype)
         dims = list(a.shape) + [0] * (MAX_DIMS - a.ndim)
         entry += struct.pack("<4Q", *dims)
@@ -235,8 +240,7 @@ def read_bin(path: Path) -> tuple[dict, dict[str, np.ndarray]]:
         if dtype not in DTYPE_SIZE:
             raise SystemExit(f"{name}: dtype {dtype}")
         start = data_start + offset
-        np_dtype = np.int8 if dtype == DTYPE_I8 else np.float32
-        a = np.frombuffer(blob, dtype=np_dtype,
+        a = np.frombuffer(blob, dtype=NP_DTYPE[dtype],
                           count=nbytes // DTYPE_SIZE[dtype], offset=start)
         tensors[name] = a.reshape(dims)
     return meta, tensors

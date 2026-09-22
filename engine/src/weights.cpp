@@ -15,6 +15,7 @@ constexpr size_t kEntrySize = 128;
 constexpr size_t kHeaderFixed = 8 + 16 + 32 + 32;
 constexpr uint32_t kDtypeF32 = 0;
 constexpr uint32_t kDtypeI8 = 1;
+constexpr uint32_t kDtypeI32 = 2;
 
 [[noreturn]] void fail(const std::string& what) {
   throw std::runtime_error("weights: " + what);
@@ -103,7 +104,7 @@ Weights Weights::load(const std::string& path) {
 
     const uint32_t ndim = read_u32(e + kNameField);
     const uint32_t dtype = read_u32(e + kNameField + 4);
-    if (dtype != kDtypeF32 && dtype != kDtypeI8) {
+    if (dtype != kDtypeF32 && dtype != kDtypeI8 && dtype != kDtypeI32) {
       fail(name + ": unsupported dtype");
     }
     if (ndim == 0 || ndim > kMaxDims) fail(name + ": bad ndim");
@@ -117,7 +118,7 @@ Weights Weights::load(const std::string& path) {
     }
     const uint64_t offset = read_u64(e + kNameField + 40);
     const uint64_t nbytes = read_u64(e + kNameField + 48);
-    const size_t elem = dtype == kDtypeI8 ? 1 : sizeof(float);
+    const size_t elem = dtype == kDtypeI8 ? 1 : 4;
     if (nbytes != static_cast<uint64_t>(view.numel) * elem) {
       fail(name + ": byte count disagrees with shape");
     }
@@ -126,6 +127,8 @@ Weights Weights::load(const std::string& path) {
 
     if (dtype == kDtypeI8) {
       view.qdata = reinterpret_cast<const int8_t*>(w.blob_.data() + start);
+    } else if (dtype == kDtypeI32) {
+      view.idata = reinterpret_cast<const int32_t*>(w.blob_.data() + start);
     } else {
       view.data = reinterpret_cast<const float*>(w.blob_.data() + start);
     }
@@ -150,6 +153,50 @@ void Weights::embed(int32_t id, float* dst) const {
   const int8_t* q = wte_.i8 + row;
   const float s = wte_.scale[id];
   for (int i = 0; i < d; ++i) dst[i] = static_cast<float>(q[i]) * s;
+  // The int8 table holds zeros in the outlier columns; the real values are
+  // kept whole.
+  const float* o = wte_.outlier + static_cast<size_t>(id) * wte_.n_outlier;
+  for (int k = 0; k < wte_.n_outlier; ++k) dst[wte_.outlier_cols[k]] = o[k];
+}
+
+// wte's outlier columns, if the file holds them. Every property the kernels
+// rely on is checked here rather than assumed there: the columns ascend and
+// are in range, the fp32 block is [vocab, k], and the int8 table is exactly
+// zero in those columns -- lm_head's int8 dot product runs over all d_model
+// terms and counts on those contributing nothing.
+void Weights::resolve_wte_outliers() {
+  const bool has_cols = has("wte.outlier_cols");
+  if (has_cols != has("wte.outlier")) {
+    fail("wte.outlier_cols and wte.outlier come together or not at all");
+  }
+  if (!has_cols) return;
+  if (!wte_.quantized()) fail("wte.outlier_cols: wte is float32, nothing to hold back");
+
+  const int d = config_.d_model;
+  const WeightView& cv = get("wte.outlier_cols");
+  if (cv.idata == nullptr || cv.shape.size() != 1 || cv.numel < 1 || cv.numel > d) {
+    fail("wte.outlier_cols: expected int32 [k], 1 <= k <= d_model");
+  }
+  const int k = static_cast<int>(cv.numel);
+  for (int i = 0; i < k; ++i) {
+    const int32_t c = cv.idata[i];
+    if (c < 0 || c >= d) fail("wte.outlier_cols: column out of range");
+    if (i > 0 && c <= cv.idata[i - 1]) fail("wte.outlier_cols: not strictly ascending");
+  }
+  const WeightView& ov = get("wte.outlier");
+  if (ov.data == nullptr ||
+      ov.shape != std::vector<int64_t>{config_.vocab_size, k}) {
+    fail("wte.outlier: expected float32 [vocab_size, k]");
+  }
+  for (int64_t j = 0; j < config_.vocab_size; ++j) {
+    const int8_t* q = wte_.i8 + static_cast<size_t>(j) * d;
+    for (int i = 0; i < k; ++i) {
+      if (q[cv.idata[i]] != 0) fail("wte: nonzero int8 value in an outlier column");
+    }
+  }
+  wte_.outlier_cols = cv.idata;
+  wte_.outlier = ov.data;
+  wte_.n_outlier = k;
 }
 
 const WeightView& Weights::get(const std::string& name) const {
@@ -176,7 +223,7 @@ void Weights::resolve() {
       m << "]";
       fail(m.str());
     }
-    if (v.quantized()) fail(name + ": expected float32, file holds int8");
+    if (v.data == nullptr) fail(name + ": expected float32");
     return v.data;
   };
 
@@ -196,13 +243,14 @@ void Weights::resolve() {
       fail(m.str());
     }
     Matrix out;
+    if (v.idata != nullptr) fail(name + ": int32 is not a weight dtype");
     if (!v.quantized()) {
       out.f32 = v.data;
       return out;
     }
     out.i8 = v.qdata;
     const WeightView& sv = get(name + ".scale");
-    if (sv.quantized()) fail(name + ".scale: must be float32");
+    if (sv.data == nullptr) fail(name + ".scale: must be float32");
     if (sv.shape != std::vector<int64_t>{channels}) {
       fail(name + ".scale: expected " + std::to_string(channels) + " entries");
     }
@@ -211,6 +259,19 @@ void Weights::resolve() {
   };
 
   wte_ = need_matrix("wte", {config_.vocab_size, d}, config_.vocab_size);
+  resolve_wte_outliers();
+
+  // Named from what was found, not from a flag: the header says int8, the
+  // tensors say how much of the model it covers.
+  if (quant_ == 0) {
+    policy_ = "fp32";
+  } else if (!wte_.quantized()) {
+    policy_ = "int8";
+  } else if (wte_.n_outlier == 0) {
+    policy_ = "int8-wte";
+  } else {
+    policy_ = "int8-wte-o" + std::to_string(wte_.n_outlier);
+  }
   wpe_ = need("wpe", {config_.n_ctx, d});
   ln_f_w_ = need("ln_f.weight", {d});
   ln_f_b_ = need("ln_f.bias", {d});

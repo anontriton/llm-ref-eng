@@ -143,8 +143,8 @@ int main(int argc, char** argv) {
                   c.name, c.W->quantized() ? "int8" : "fp32",
                   c.n_in, c.n_out, best, per_forward, gflop / (best / 1000.0));
     }
-    std::printf("%-10s %6s %-14s %10s %12.1f\n", "TOTAL",
-                weights.policy(), "", "", total);
+    std::printf("%-10s %11s %-9s %10s %12.1f\n", "TOTAL",
+                weights.policy().c_str(), "", "", total);
     std::printf("\nbackend %s, %d thread(s), rows %d\n",
                 gpt2::backend::name(), gpt2::threads::count(), rows);
     return 0;

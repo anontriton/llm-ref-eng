@@ -50,8 +50,12 @@ a port rather than a redesign.
 **Size is the problem, not speed.** The weight file is the download:
 
     fp32                        497.8 MB
-    int8, wte fp32              243.3 MB   <- what ships today
+    int8, wte fp32              243.3 MB   <- Phase 4's file, native
     int8, wte int8              127.7 MB   <- rejected: 17% of argmaxes change
+    int8, wte int8 + 8 cols     129.3 MB   <- Phase 5's file, for the browser
+
+The last line is the answer, and the rest of this section is how it was
+reached; see "Weights for the browser" below for the result.
 
 Of the 243 MB, **154 MB is `wte`**, kept in fp32 because Phase 4 measured
 twice that quantizing it costs far more than it saves (`scripts/quantize_weights.py`
@@ -194,6 +198,36 @@ tok/s at 8 threads and the wasm build has none yet (see Threads above).
 These replace a first attempt that is not in `results/`: measured on battery
 under the low-power profile, 2.4x slow across the board. `bench/run.py` now
 records the power state and names such a run `...-lowpower.json`.
+
+## Weights for the browser: int8-wte-o8
+
+    .venv/bin/python scripts/quantize_weights.py --wte-outliers 8
+                                    # -> weights/gpt2-124m-int8-wte-o8.bin
+
+`wte` in int8 like the layers, except the 8 columns where ln_f's output is
+largest -- picked on `eval/calib.tsv` by the same function
+`reference/wte_sim.py` used -- which are zeroed in the int8 table and stored
+whole beside it. lm_head adds an 8-wide fp32 dot per logit; the embedding
+lookup overwrites 8 values. The file format gained an int32 dtype for the
+column indices, and the loader checks every property the kernel relies on,
+including that the int8 table really is zero in those columns.
+
+Judged by `eval/metrics.py` on the engine, against the fp32 engine:
+
+                          int8 (243.3 MB)   int8-wte-o8 (129.3 MB)   simulated
+    perplexity ratio          x0.99844          x0.99805             x0.99805
+    top-1 agreement            97.480%           97.383%              97.407%
+    mean KL                   0.001168          0.001345             0.001327
+    decisive disagreement      0/256             0/256                    --
+
+The simulation called the perplexity ratio to five decimals again. The policy
+name is `int8-wte-o8`, derived by the loader from what the file holds, so
+nothing downstream can report it as Phase 4's `int8`.
+
+Backends: native scalar and AVX2 are byte-identical on it, as are wasm scalar
+and wasm_simd128; native and wasm differ by at most 9.2e-5 in a logit, the
+libm difference from step 1, with top-1 identical at every position. fp32 is
+untouched -- 615/615 oracle tensors identical to before the change.
 
 ## Suggested order
 

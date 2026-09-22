@@ -239,10 +239,27 @@ void linear_tied(const float* x, const Matrix& Wt, float* out,
     const int j0 = s * strip;
     const int j1 = std::min(j0 + strip, n_out);
 
+    // Outlier columns, when Wt holds any: x's values at those columns,
+    // gathered once per row so each output adds one short contiguous dot.
+    static thread_local std::vector<float> xo;
+    const size_t k = static_cast<size_t>(Wt.n_outlier);
+    xo.resize(k);
+
     for (int r = 0; r < rows; ++r) {
       const float* xr = x + static_cast<size_t>(r) * n_in;
       float* orow = out + static_cast<size_t>(r) * n_out;
-      if (Wt.quantized()) {
+      if (Wt.quantized() && k > 0) {
+        for (size_t i = 0; i < k; ++i) xo[i] = xr[Wt.outlier_cols[i]];
+        // The int8 table is zero in the outlier columns (the loader checks),
+        // so its dot product runs over all n_in unchanged and those terms add
+        // nothing; the fp32 columns follow as their own reduction through
+        // the same backend, which keeps every backend bit-identical.
+        for (int j = j0; j < j1; ++j) {
+          orow[j] = backend::dot_i8(xr, Wt.i8 + static_cast<size_t>(j) * n_in,
+                                    static_cast<size_t>(n_in)) * Wt.scale[j] +
+                    backend::dot(xo.data(), Wt.outlier + static_cast<size_t>(j) * k, k);
+        }
+      } else if (Wt.quantized()) {
         for (int j = j0; j < j1; ++j) {
           orow[j] = backend::dot_i8(xr, Wt.i8 + static_cast<size_t>(j) * n_in,
                                     static_cast<size_t>(n_in)) * Wt.scale[j];

@@ -166,6 +166,51 @@ void test_linear_tied() {
   }
 }
 
+// int8 with outlier columns held back in fp32 (Phase 5's wte). The reference
+// is the matrix the representation stands for -- q * scale everywhere except
+// the outlier columns, which take their fp32 values -- so a kernel that forgot
+// the outliers, or counted them twice, lands far off.
+void test_linear_tied_outliers() {
+  const int rows = 3, n_in = 20, n_out = 5;
+  const std::vector<int32_t> cols = {2, 9, 17};
+  const int k = static_cast<int>(cols.size());
+  std::vector<float> x(rows * n_in), scale(n_out), outlier(n_out * k), out(rows * n_out);
+  std::vector<int8_t> q(n_out * n_in);
+  for (int i = 0; i < rows * n_in; ++i) x[i] = static_cast<float>(0.1 * (i % 7) - 0.3);
+  // Make the outlier inputs large, as ln_f's are.
+  for (int r = 0; r < rows; ++r) {
+    for (int c : cols) x[r * n_in + c] = static_cast<float>(40.0 + r);
+  }
+  for (int i = 0; i < n_out * n_in; ++i) q[i] = static_cast<int8_t>((i * 37) % 255 - 127);
+  for (int j = 0; j < n_out; ++j) {
+    scale[j] = static_cast<float>(0.01 * (j + 1));
+    for (int c : cols) q[j * n_in + c] = 0;  // what the loader requires
+    for (int m = 0; m < k; ++m) outlier[j * k + m] = static_cast<float>(0.5 - 0.3 * m + 0.1 * j);
+  }
+
+  gpt2::Matrix Wtm;
+  Wtm.i8 = q.data();
+  Wtm.scale = scale.data();
+  Wtm.outlier_cols = cols.data();
+  Wtm.outlier = outlier.data();
+  Wtm.n_outlier = k;
+  gpt2::ops::linear_tied(x.data(), Wtm, out.data(), rows, n_in, n_out);
+  for (int r = 0; r < rows; ++r) {
+    for (int j = 0; j < n_out; ++j) {
+      double want = 0.0;
+      for (int i = 0; i < n_in; ++i) {
+        const auto it = std::find(cols.begin(), cols.end(), i);
+        const double w = it == cols.end()
+            ? static_cast<double>(q[j * n_in + i]) * scale[j]
+            : static_cast<double>(outlier[j * k + (it - cols.begin())]);
+        want += static_cast<double>(x[r * n_in + i]) * w;
+      }
+      check::close(out[r * n_out + j], want, 1e-4,
+                   "linear_tied: int8 with fp32 outlier columns");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -174,5 +219,6 @@ int main() {
   test_softmax();
   test_linear();
   test_linear_tied();
+  test_linear_tied_outliers();
   return check::report("test_ops");
 }

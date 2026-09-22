@@ -2,6 +2,8 @@
 """Quantize the flat weight file to int8, symmetric, per output channel.
 
     python scripts/quantize_weights.py         # -> weights/gpt2-124m-int8.bin
+    python scripts/quantize_weights.py --wte-outliers 8
+                                        # -> weights/gpt2-124m-int8-wte-o8.bin
 
 Reads the fp32 file and rewrites the large matrices as int8 plus a float32
 scale per output channel. Everything else -- layer norms, biases, the position
@@ -52,6 +54,23 @@ The output channel is the axis the matmul reduces *to*:
 
 Scales ride along as ordinary f32 tensors named "<tensor>.scale", so the file
 format needs nothing new beyond a dtype value it already had a field for.
+
+--wte-outliers K is Phase 5's answer to the wte trade, for the browser, where
+the file is the download. reference/wte_sim.py found int8 wte's damage is
+entirely lm_head, and entirely a few hidden dims: ln_f's output has columns
+averaging |x| = 201 against a median of 0.35, and an int8 error there is
+multiplied by them. So the K columns with the largest ln_f activations --
+measured on eval/calib.tsv by the reference model, the same function the
+simulation used -- are zeroed in the int8 table, which also keeps them out of
+the row scales, and stored whole beside it:
+
+    wte                 int8  [vocab, d_model], zero in the outlier columns
+    wte.scale           f32   [vocab]
+    wte.outlier_cols    i32   [K], ascending
+    wte.outlier         f32   [vocab, K]
+
+At K = 8 that is 129.3 MB against 243.3 MB, and in simulation it passes every
+eval/metrics.py gate that int8 wte without it fails.
 """
 
 from __future__ import annotations
@@ -90,6 +109,21 @@ def quantize(w: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
     return q, np.ascontiguousarray(scale.reshape(-1))
 
 
+def outlier_columns_from_calib(k: int) -> np.ndarray:
+    """The k hidden dims of ln_f's output with the largest mean |x|, ascending.
+    Delegates to reference/wte_sim.py so the file the engine loads and the
+    simulation that justified it cannot pick different columns."""
+    sys.path.insert(0, str(ROOT / "reference"))
+    from quant_sim import corpus_ids
+    from weights import DEFAULT_WEIGHTS, load_gpt2
+    from wte_sim import WINDOW, outlier_columns
+
+    model = load_gpt2(str(DEFAULT_WEIGHTS))
+    calib = corpus_ids(ROOT / "eval" / "calib.tsv")[:WINDOW]
+    order = outlier_columns(model, calib)
+    return np.sort(order[:k].numpy())
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -99,9 +133,20 @@ def main() -> int:
     parser.add_argument("--quantize-wte", action="store_true",
                         help="also quantize the embedding table; measured to "
                              "cost far more than it saves, see above")
+    parser.add_argument("--wte-outliers", type=int, default=0, metavar="K",
+                        help="quantize wte too, holding back the K columns "
+                             "with the largest ln_f activations in fp32")
     parser.add_argument("--keep-fp32", nargs="*", default=[],
                         help="further tensor names to leave alone")
     args = parser.parse_args()
+
+    if args.wte_outliers:
+        args.quantize_wte = True
+        if args.out == DEFAULT_OUT:
+            args.out = DEFAULT_OUT.with_name(
+                f"gpt2-124m-int8-wte-o{args.wte_outliers}.bin")
+        cols = outlier_columns_from_calib(args.wte_outliers)
+        print(f"  wte outlier columns (ln_f, eval/calib.tsv): {cols.tolist()}")
 
     meta, tensors = read_bin(args.src)
     if meta["quant"] != 0:
@@ -125,13 +170,25 @@ def main() -> int:
             out[name] = a
             continue
 
-        q, scale = quantize(a.astype(np.float32), axis)
+        a32 = a.astype(np.float32)
+        if name == "wte" and args.wte_outliers:
+            # Zero first, so the outliers set no row's scale and the int8
+            # table is exactly zero where the engine expects it to be.
+            held = np.ascontiguousarray(a32[:, cols])
+            a32 = a32.copy()
+            a32[:, cols] = 0.0
+        q, scale = quantize(a32, axis)
         out[name] = q
         out[f"{name}.scale"] = scale
+        if name == "wte" and args.wte_outliers:
+            out["wte.outlier_cols"] = cols.astype(np.int32)
+            out["wte.outlier"] = held
+            print(f"  {'wte.outlier':28s} {str(held.shape):14s} -> fp32, "
+                  f"columns held back from int8")
         n_quantized += 1
 
         rel = float(np.abs(q.astype(np.float32) * scale.reshape(
-            (-1, 1) if axis == 1 else (1, -1)) - a).max() / np.abs(a).max())
+            (-1, 1) if axis == 1 else (1, -1)) - a32).max() / np.abs(a32).max())
         print(f"  {name:28s} {str(a.shape):14s} -> int8 + {scale.size:5d} "
               f"scales   worst rel {rel:.5f}")
 

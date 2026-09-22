@@ -21,8 +21,9 @@ namespace gpt2 {
 
 // A non-owning view of one tensor inside the loaded blob.
 struct WeightView {
-  const float* data = nullptr;       // null when the tensor is int8
-  const int8_t* qdata = nullptr;     // null when the tensor is float32
+  const float* data = nullptr;       // set only when the tensor is float32
+  const int8_t* qdata = nullptr;     // set only when the tensor is int8
+  const int32_t* idata = nullptr;    // set only when the tensor is int32
   std::vector<int64_t> shape;
   int64_t numel = 0;
   bool quantized() const { return qdata != nullptr; }
@@ -37,10 +38,23 @@ struct WeightView {
 // whose output channel as the tied lm_head is the vocabulary. The scale is
 // applied once after the reduction rather than per element, which is both
 // cheaper and slightly more accurate than dequantizing first.
+//
+// Outlier columns (Phase 5, wte only). ln_f's output has a few hidden dims two
+// hundred times the median, and an int8 error in those columns of the tied
+// lm_head is multiplied by them; reference/wte_sim.py measured that as the
+// whole of int8 wte's damage. So those columns are held back in fp32: the int8
+// table stores zeros there -- which also keeps them out of the row scales --
+// and `outlier` holds the real values, [rows, n_outlier] row-major, for the
+// ascending column indices in `outlier_cols`. The stored value is then
+//     w[j, c] ~= q[j, c] * scale[j]           for c not an outlier column
+//     w[j, c]  = outlier[j, k]                 for c = outlier_cols[k]
 struct Matrix {
   const float* f32 = nullptr;
   const int8_t* i8 = nullptr;
   const float* scale = nullptr;
+  const int32_t* outlier_cols = nullptr;
+  const float* outlier = nullptr;
+  int n_outlier = 0;
   bool quantized() const { return i8 != nullptr; }
 };
 
@@ -86,7 +100,10 @@ class Weights {
   // True when the file declared itself quantized; recorded by the eval
   // manifest so a result cannot misreport what it ran.
   bool quantized() const { return quant_ != 0; }
-  const char* policy() const { return quant_ == 0 ? "fp32" : "int8"; }
+  // "fp32", "int8" (layers only, wte fp32 -- the Phase 4 file), "int8-wte"
+  // (wte too), or "int8-wte-o<k>" (wte with k columns held back in fp32).
+  // Derived from what the file holds, so a result cannot misname it.
+  const std::string& policy() const { return policy_; }
   const float* wpe() const { return wpe_; }
   const float* ln_f_w() const { return ln_f_w_; }
   const float* ln_f_b() const { return ln_f_b_; }
@@ -94,6 +111,7 @@ class Weights {
 
  private:
   void resolve();
+  void resolve_wte_outliers();
 
   std::string path_;
   std::vector<unsigned char> blob_;
@@ -103,6 +121,7 @@ class Weights {
 
   Matrix wte_;
   uint32_t quant_ = 0;
+  std::string policy_;
   const float* wpe_ = nullptr;
   const float* ln_f_w_ = nullptr;
   const float* ln_f_b_ = nullptr;

@@ -101,6 +101,10 @@ right formula; `compare.py` checks the whole engine against the reference.
   would reshape the tree and change the answer.
 - **Decode takes the unblocked path** (`rows == 1`), deliberately: a single row
   reuses nothing and still pays the stride. It cost 1.7x before it was gated.
+- **wte's outlier columns are zero in the int8 table**, and lm_head relies on
+  it: the int8 dot runs over all of `d_model` and those terms must add
+  nothing, before the 8-wide fp32 dot adds the real values. The loader refuses
+  a file where that is not so. Only `int8-wte-o<k>` files have outliers.
 - **int8 scales apply once after the reduction**, not per element -- one
   multiply and one rounding instead of `n_in` of them. `Matrix` carries
   whichever representation the file holds; above the kernels nothing branches.
