@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "wikitext2-train",
+  "source": {
+    "server": "https://datasets-server.huggingface.co/rows",
+    "dataset": "Salesforce/wikitext",
+    "config": "wikitext-2-raw-v1",
+    "split": "train",
+    "rows": 600,
+    "offset": 0
+  },
+  "text_sha256": "08e35e98ecaa49741042d7e390500a9e4cb6ca6732622f2d71d414fa7baba2f8",
+  "text_chars": 147482,
+  "n_tokens": 16384,
+  "ids_sha256": "109dcc44bf30d9a9e2db4d3b58199e510f471bdf910e8b824e9809f216327fd1",
+  "preview": " = Valkyria Chronicles III = \n Senj\u014d no Valkyria 3 : Unrecorded Chronicles ( Japanese : \u6226\u5834\u306e\u30f4\u30a1\u30eb\u30ad\u30e5\u30ea\u30a23 , lit . Valkyria of the Battlefield 3 ) , commonly referred to as Valkyria Chronicles III outside Ja"
+}
