@@ -88,8 +88,9 @@ dependencies: the page loads and shows the verified sha256; greedy on "The
 capital of France is" puts on screen exactly the text `gpt2_generate`'s ids
 decode to; Stop ends a sampling run; a reload loads the weights from the
 browser's cache; one flipped byte in one weight part is refused, and Generate
-stays disabled; a phone asks before downloading and lays out in 390 px; and
-nothing reaches the console. Throttled to 30 MB/s in an earlier run, the
+stays disabled; a part cut off halfway is retried, and one that never arrives
+fails with a reason; a phone asks before downloading and lays out in 390 px;
+and nothing reaches the console. Throttled to 30 MB/s in an earlier run, the
 progress bar climbed to 129.3 MB over 4.3 s.
 
 ## The tokenizer
@@ -181,8 +182,14 @@ nothing.
   `eval/results/20260922T231318Z-1bb173c-int8-wte-o8.json` measured, rebuilt in
   CI byte for byte -- and the page hashes what it downloaded before the engine
   sees a byte, and says so on screen.
+- **Each part is downloaded whole and retried if its connection drops** -- up
+  to four attempts, restarting that part from zero -- and only then handed to
+  the engine or stored. The first live deploy lost a part to a cold CDN
+  mid-download; `test_page.mjs` now cuts a part off halfway, once and forever,
+  and requires a retry and a clear failure respectively.
 - **Repeat visits load from the browser's cache**, keyed by that sha256, so a
-  new file can never be served from an old one's entries.
+  new file can never be served from an old one's entries. A part is cached
+  only once it is complete.
 - **Phones ask first.** 129 MB and a few hundred MB of memory is a lot to
   take unasked.
 

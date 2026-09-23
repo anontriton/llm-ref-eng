@@ -222,6 +222,22 @@ and drops U+0085); and `<|endoftext|>` typed as text becomes the special token,
 with the whitespace around it kept. The test was then shown to fail on six
 planted bugs before it was trusted.
 
+## 11. The first live deploy failed on a network the tests never had
+
+Every check passed in CI, and the live page failed on first load with a bare
+"network error". Replaying the loader's requests on the live site showed one
+32 MiB weight part cut off mid-download while the CDN was still cold; `curl`
+fetched the same part cleanly five times afterwards. The local server and CI's
+test server had never dropped a connection -- or compressed a response, which
+GitHub Pages does for these parts -- so a loader that treated any interruption
+as fatal had passed everything.
+
+The loader now downloads each part whole and retries it from zero, up to four
+times, before the engine sees a byte of it. More to the point, the page test's
+server now cuts a part off halfway: once, which must be retried, and on every
+request, which must fail with a reason. Run against the worker that shipped,
+both cases fail with the live symptom; against the fix, both pass.
+
 ## Known limits
 
 - `Model::forward` computes logits for every position; prefill needs only the

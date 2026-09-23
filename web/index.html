@@ -199,6 +199,8 @@ const ms = (n) => n >= 1000 ? (n / 1000).toFixed(2) + " s" : n.toFixed(0) + " ms
 worker.onmessage = ({ data: m }) => {
   if (m.type === "progress" && m.what === "verify") {
     status("Checking the weights' sha256…");
+  } else if (m.type === "progress" && m.what === "retry") {
+    status(`The download of ${m.file} was interrupted; retrying (${m.attempt + 1} of 4)…`);
   } else if (m.type === "progress") {
     const verb = m.fromCache ? "Loading weights from this browser's cache" : "Downloading weights";
     status(`${verb}  ${mb(m.loaded)} / ${mb(m.total)} MB`);

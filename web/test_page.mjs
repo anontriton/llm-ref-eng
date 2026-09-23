@@ -13,6 +13,10 @@
 //   cache     a reload takes the weights from the browser's cache
 //   tamper    one flipped byte in one part: the page refuses the file and
 //             never becomes ready
+//   flaky     a part's connection dropped halfway, once: the page retries it
+//             and loads -- the failure the first live deploy actually hit
+//   down      a part that always drops: the page gives up with a reason, and
+//             Generate stays disabled
 //   mobile    a phone asks before downloading anything
 //   console   no errors, other than the tamper run's deliberate one
 //
@@ -43,11 +47,12 @@ if (!existsSync(join(SITE, "model/weights.json"))) {
   process.exit(1);
 }
 
-// --- a static server, with a switch to corrupt one part --------------------
+// --- a static server, with switches to corrupt or cut off one part ---------
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript",
                 ".wasm": "application/wasm", ".json": "application/json", ".txt": "text/plain",
                 ".bin": "application/octet-stream" };
 let tamper = false;
+let drops = 0;          // cut weights-002.bin off halfway this many more times
 const server = createServer((req, res) => {
   let path = normalize(decodeURIComponent(new URL(req.url, "http://x").pathname));
   if (path.endsWith("/")) path += "index.html";
@@ -63,6 +68,12 @@ const server = createServer((req, res) => {
   }
   res.writeHead(200, { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream",
                        "Content-Length": body.length });
+  if (drops > 0 && path.endsWith("weights-002.bin")) {
+    --drops;
+    // Promise the whole part, send half, and hang up: a dropped connection.
+    res.write(body.subarray(0, body.length >> 1), () => res.socket.destroy());
+    return;
+  }
   res.end(body);
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -209,6 +220,28 @@ console.log(`site ${URL_}, weights ${manifest.policy} sha256 ${manifest.sha256.s
   check(/checksum/.test(s) && goDisabled, `tamper: ${s}`);
   await b.close();
   tamper = false;
+}
+
+// --- flaky: one dropped connection is retried -------------------------------
+{
+  drops = 1;
+  const b = await browser();
+  await b.send("Page.navigate", { url: URL_ });
+  const s = await b.waitStatus(/^Ready|error|checksum|attempts/i, 120);
+  check(/^Ready/.test(s) && drops === 0, `flaky: a part cut off halfway was retried -- ${s}`);
+  await b.close();
+}
+
+// --- down: a part that never arrives is reported, not hung on ---------------
+{
+  drops = 1000;
+  const b = await browser();
+  await b.send("Page.navigate", { url: URL_ });
+  const s = await b.waitStatus(/^Ready|attempts/i, 120);
+  const goDisabled = await b.js(`document.getElementById("go").disabled`);
+  check(/after 4 attempts/.test(s) && goDisabled, `down: ${s}`);
+  await b.close();
+  drops = 0;
 }
 
 // --- mobile: asks before downloading ----------------------------------------

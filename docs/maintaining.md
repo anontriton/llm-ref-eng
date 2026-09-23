@@ -62,7 +62,9 @@ bit-identical to the wasm scalar build, not merely within tolerance:
 Every push to `main` runs this gate again in GitHub Actions
 (`.github/workflows/pages.yml`) -- on a clean runner, from the checkpoint up --
 and publishes the demo only if all of it passes; pull requests run it and
-publish nothing.
+publish nothing. CI regenerates the PyTorch reference on its own CPU and torch
+version, so its oracle budget figure is its own -- 40.8% at the first deploy --
+and not comparable to the 52.0% and 58.1% measured here.
 
 Watch the budget percentage `compare.py` prints, not just the pass. It has been
 52.0% natively since Phase 2 and stayed there through four optimizations, and

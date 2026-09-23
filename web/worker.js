@@ -46,34 +46,69 @@ async function openCache(sha) {
   }
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const ATTEMPTS = 4;
+
+// One part, whole, into its own buffer -- retried from the start if the
+// connection drops, which a 32 MB download over a real network sometimes
+// does (the first live deploy lost one to a cold CDN). Buffering a part
+// before the engine sees it costs one part's memory and makes a retry safe:
+// nothing half-received ever reaches wasm memory.
+async function fetchPart(url, part, report) {
+  for (let attempt = 1; ; ++attempt) {
+    try {
+      const response = await fetchOk(url);
+      const buf = new Uint8Array(part.bytes);
+      let at = 0;
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (at + value.length > part.bytes) throw new Error(`${part.file}: longer than ${part.bytes} bytes`);
+        buf.set(value, at);
+        at += value.length;
+        report(at);
+      }
+      if (at !== part.bytes) throw new Error(`${part.file}: ${at} of ${part.bytes} bytes`);
+      return buf;
+    } catch (e) {
+      report(0);
+      if (attempt === ATTEMPTS) throw new Error(`${part.file}: ${e.message} (after ${ATTEMPTS} attempts)`);
+      post({ type: "progress", what: "retry", file: part.file, attempt });
+      await sleep(500 * attempt);
+    }
+  }
+}
+
+// The weights' parts, in order, one buffer each -- from the browser's cache
+// when an earlier visit stored them, downloaded and stored otherwise. The
+// cache is keyed by the file's sha256, so a new file can never be served from
+// an old one's entries; old entries are deleted. A part is cached only once it
+// is complete, and the whole file's sha256 is checked before the engine parses
+// it either way.
 async function* weightChunks(manifest, cache, status) {
-  let loaded = 0;
+  let done = 0;
   for (const part of manifest.parts) {
     const url = new URL(part.file, MODEL);
-    let response = cache ? await cache.match(url) : undefined;
-    let body;
-    if (response) {
-      body = response.body;
-    } else {
+    const progress = (at) => post({ type: "progress", what: "weights", loaded: done + at,
+                                    total: manifest.bytes, fromCache: status.fromCache });
+    let buf = null;
+    const hit = cache ? await cache.match(url).catch(() => undefined) : undefined;
+    if (hit) {
+      const cached = new Uint8Array(await hit.arrayBuffer());
+      if (cached.length === part.bytes) buf = cached;
+    }
+    if (!buf) {
       status.fromCache = false;
-      response = await fetchOk(url);
-      body = response.body;
+      buf = await fetchPart(url, part, progress);
       if (cache) {
-        // One copy of the stream feeds the engine, the other the cache.
-        const [mine, stored] = body.tee();
-        body = mine;
-        cache.put(url, new Response(stored, { headers: response.headers })).catch(() => {});
+        cache.put(url, new Response(buf, { headers: { "Content-Type": "application/octet-stream" } }))
+          .catch(() => {});
       }
     }
-    const reader = body.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      loaded += value.length;
-      post({ type: "progress", what: "weights", loaded, total: manifest.bytes,
-             fromCache: status.fromCache });
-      yield value;
-    }
+    done += part.bytes;
+    progress(0);
+    yield buf;
   }
 }
 
