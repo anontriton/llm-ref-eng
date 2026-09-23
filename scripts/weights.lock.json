@@ -1,6 +1,7 @@
 {
   "repo": "openai-community/gpt2",
-  "base_url": "https://huggingface.co/openai-community/gpt2/resolve/main",
+  "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+  "base_url": "https://huggingface.co/openai-community/gpt2/resolve/607a30d783dfa663caf39e06633721c8d4cfcd7e",
   "files": {
     "config.json": {
       "sha256": "0daed7749b4f02b8f76240d5444551d7b08712dab4d0adb8239c56ba823bb7b4",

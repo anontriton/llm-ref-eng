@@ -13,7 +13,7 @@ directories and eval dumps are all gitignored and have to be regenerated; what
 | Committed | Regenerate |
 |---|---|
 | `oracle/manifest.json` -- shapes and a sha256 per tensor | `oracle/activations/*.npy` (`reference/dump.py`) |
-| `scripts/weights.lock.json` -- checkpoint checksum | `weights/` (download, convert, quantize) |
+| `scripts/weights.lock.json` -- the checkpoint's Hugging Face commit and checksums | `weights/` (download, convert, quantize) |
 | `bench/prompts.tsv`, `eval/corpus.tsv`, `eval/calib.tsv` | -- pinned inputs, never regenerate casually |
 | `web/tokenizer_cases.json` -- HF's ids for the tokenizer's edge cases | (`scripts/export_tokenizer_cases.py`) |
 | `web/weights.lock.json` -- sha256 of the one weight file the hosted demo may ship | -- change only with a new eval result |

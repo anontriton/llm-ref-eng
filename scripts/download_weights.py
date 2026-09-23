@@ -10,6 +10,12 @@ imports transformers.
 
 `--pin` rewrites scripts/weights.lock.json from whatever was just downloaded.
 Run it once, commit the lockfile, and every later run is a verification.
+
+Files come from one fixed Hugging Face commit, recorded in the lockfile as
+`revision`, never from `main`. The checksums already make any change to the
+bytes a loud failure; pinning the revision means an upstream change cannot even
+cause that -- the URLs are immutable. `--pin` resolves whatever `main` is at the
+time and records that commit.
 """
 
 from __future__ import annotations
@@ -22,7 +28,17 @@ import urllib.request
 from pathlib import Path
 
 REPO = "openai-community/gpt2"
-BASE = f"https://huggingface.co/{REPO}/resolve/main"
+API = f"https://huggingface.co/api/models/{REPO}"
+
+
+def base_url(revision: str) -> str:
+    return f"https://huggingface.co/{REPO}/resolve/{revision}"
+
+
+def current_revision() -> str:
+    """The commit `main` points at right now -- only for --pin."""
+    with urllib.request.urlopen(API) as response:
+        return json.load(response)["sha"]
 
 # Weights, plus the tokenizer files. The tokenizer is the one other thing we
 # are allowed to take from upstream rather than write ourselves.
@@ -49,8 +65,8 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def download(name: str, dest: Path) -> None:
-    url = f"{BASE}/{name}"
+def download(base: str, name: str, dest: Path) -> None:
+    url = f"{base}/{name}"
     tmp = dest.with_suffix(dest.suffix + ".part")
     # Only draw a progress bar on a terminal; in a log it is just noise.
     live = sys.stderr.isatty()
@@ -81,8 +97,17 @@ def main() -> int:
 
     DEST.mkdir(parents=True, exist_ok=True)
     lock = {}
-    if LOCKFILE.exists() and not args.pin:
-        lock = json.loads(LOCKFILE.read_text())["files"]
+    if args.pin:
+        revision = current_revision()
+        print(f"  pinning {REPO} at {revision}")
+    elif LOCKFILE.exists():
+        pinned = json.loads(LOCKFILE.read_text())
+        lock = pinned["files"]
+        revision = pinned["revision"]
+    else:
+        print(f"no {LOCKFILE.name}; run --pin once", file=sys.stderr)
+        return 1
+    base = base_url(revision)
 
     computed = {}
     failures = []
@@ -90,7 +115,7 @@ def main() -> int:
     for name in FILES:
         path = DEST / name
         if args.force or not path.exists():
-            download(name, path)
+            download(base, name, path)
         else:
             print(f"  {name}: already present")
 
@@ -111,7 +136,8 @@ def main() -> int:
 
     if args.pin:
         LOCKFILE.write_text(json.dumps(
-            {"repo": REPO, "base_url": BASE, "files": computed}, indent=2
+            {"repo": REPO, "revision": revision, "base_url": base,
+             "files": computed}, indent=2
         ) + "\n")
         print(f"\npinned {len(computed)} files -> {LOCKFILE}")
         return 0

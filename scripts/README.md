@@ -6,7 +6,9 @@ Weights:
                           into `weights/` (gitignored) and verify them against
                           `weights.lock.json`. `--pin` created that lockfile
                           once; every run since is a verification.
-- `weights.lock.json`     pinned sha256 and byte count for all 5 files.
+- `weights.lock.json`     the Hugging Face commit the files come from -- never
+                          `main`, so upstream changes cannot reach this repo --
+                          and a pinned sha256 and byte count for all 5 files.
 - `convert_weights.py`    the checkpoint -> `weights/gpt2-124m.bin`, the flat
                           file the C++ engine loads (format documented in the
                           script). Carries the source checkpoint's sha256 so the
