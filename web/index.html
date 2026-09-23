@@ -133,7 +133,7 @@
       <div class="knob"><label class="field" for="max">New tokens</label><input id="max" type="number" min="1" max="1023" value="80"></div>
       <div class="knob"><label class="field" for="temp">Temperature</label><input id="temp" type="number" min="0" max="2" step="0.1" value="0.8"></div>
       <div class="knob"><label class="field" for="topk">Top-k</label><input id="topk" type="number" min="1" max="50257" value="40"></div>
-      <div class="knob"><label class="field" for="seed">Seed</label><input id="seed" type="number" min="0" value="42"></div>
+      <div class="knob"><label class="field" for="seed">Seed</label><input id="seed" type="number" min="0" value="42" title="A new seed each run. Type one to repeat a run exactly."></div>
       <div class="spacer"></div>
       <button class="secondary" id="stop" disabled>Stop</button>
       <button class="primary" id="go" disabled>Generate</button>
@@ -248,6 +248,22 @@ worker.onmessage = ({ data: m }) => {
 };
 worker.onerror = (e) => status(`Worker failed: ${e.message}`, "error ready");
 
+// The first run uses the seed box's 42, so the page opens on a repeatable
+// example. After that each run rolls a fresh seed into the box -- so the seed
+// shown is always the one that made the text on screen -- unless the visitor
+// typed a seed since the last run, which is kept: that is how a run is repeated.
+let lastSeed = null;
+let seedTyped = false;
+$("seed").addEventListener("input", () => { seedTyped = true; });
+function nextSeed() {
+  if (lastSeed !== null && !seedTyped) {
+    $("seed").value = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000);
+  }
+  seedTyped = false;
+  lastSeed = Number($("seed").value) >>> 0;
+  return lastSeed;
+}
+
 $("go").onclick = () => {
   const prompt = $("prompt").value;
   const out = $("output");
@@ -265,7 +281,7 @@ $("go").onclick = () => {
     maxTokens: Math.max(1, Number($("max").value) || 80),
     temperature: Math.max(0, Number($("temp").value) || 0),
     topK: Math.max(1, Number($("topk").value) || 40),
-    seed: Number($("seed").value) >>> 0,
+    seed: nextSeed(),
   });
 };
 $("stop").onclick = () => worker.postMessage({ type: "stop" });

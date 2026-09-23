@@ -11,6 +11,8 @@
 //             exactly the text gpt2_generate.js's ids decode to
 //   stop      Stop ends a long sampling run
 //   cache     a reload takes the weights from the browser's cache
+//   seed      the first run uses 42, later runs roll a new seed into the box,
+//             and a typed-in seed is kept and repeats its run exactly
 //   tamper    one flipped byte in one part: the page refuses the file and
 //             never becomes ready
 //   flaky     a part's connection dropped halfway, once: the page retries it
@@ -206,6 +208,28 @@ console.log(`site ${URL_}, weights ${manifest.policy} sha256 ${manifest.sha256.s
   await b.send("Page.reload");
   const again = await b.waitStatus(/^Ready|error/i, 60);
   check(/from cache/.test(again), `cache: ${again}`);
+
+  const sampled = async (typedSeed) => {
+    await b.js(`(() => {
+      document.getElementById("prompt").value = "Once upon a time,";
+      document.getElementById("temp").value = "0.8";
+      document.getElementById("max").value = "12";
+      ${typedSeed === undefined ? "" : `
+      const s = document.getElementById("seed");
+      s.value = "${typedSeed}";
+      s.dispatchEvent(new Event("input"));`}
+      document.getElementById("go").click();
+    })()`);
+    await b.waitStatus(/^Done|error/i, 60);
+    return { seed: await b.js(`document.getElementById("seed").value`),
+             text: await b.js(`document.getElementById("output").textContent`) };
+  };
+  const first = await sampled();
+  const second = await sampled();
+  const repeat = await sampled(first.seed);
+  check(first.seed === "42" && second.seed !== "42" && repeat.seed === "42" &&
+        repeat.text === first.text && second.text !== first.text,
+        `seed: runs used ${first.seed}, ${second.seed}, then a typed ${repeat.seed} repeated the first`);
   check(b.errors.length === 0, `console: ${b.errors.length ? b.errors.join(" | ") : "no errors"}`);
   await b.close();
 }

@@ -205,8 +205,10 @@ nothing.
   Stop takes effect on the next token.
 - **Greedy is the validated mode.** At temperature 0 the page's output is the
   engine's, argmax with the same tie rule as `gpt2_generate`. Temperature and
-  top-k (40 by default, as in GPT-2's own samples) are a demo feature, seeded so
-  a run repeats.
+  top-k (40 by default, as in GPT-2's own samples) are a demo feature. The first
+  run uses seed 42, so the page opens on a repeatable example; each later run
+  rolls a new seed into the box, so the seed shown always made the text shown;
+  typing a seed keeps it, which repeats that run exactly.
 - **No threads.** The engine's pool is `std::thread`, which Emscripten supports
   only with pthreads, which need `SharedArrayBuffer`, which needs COOP/COEP
   headers from whatever serves the page. The pool never exists at one thread,
