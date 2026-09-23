@@ -1,5 +1,7 @@
 # GPT-2 from scratch: PyTorch, C++, WebAssembly
 
+[![Validate and deploy demo](https://github.com/anontriton/llm-ref-eng/actions/workflows/pages.yml/badge.svg)](https://github.com/anontriton/llm-ref-eng/actions/workflows/pages.yml)
+
 A GPT-2 124M inference engine built three times: a hand-written PyTorch
 reference, a dependency-free C++ engine, and a WebAssembly build that runs in
 the browser. The point is not that it runs. It is that every stage is **proven
