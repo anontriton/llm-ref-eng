@@ -52,6 +52,10 @@
   .status.ready .bar { display: none; }
   .status .msg { font-variant-numeric: tabular-nums; }
   .status.error .msg { color: var(--warn); }
+  .status button { font: 600 13px var(--sans); padding: 5px 12px; border-radius: 6px;
+    cursor: pointer; background: var(--accent); color: var(--accent-ink); border: 0; }
+  .verified { color: var(--muted); font-size: 12px; margin-top: -8px; margin-bottom: 14px; }
+  .verified code { font-family: var(--mono); }
 
   label.field { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   textarea {
@@ -103,6 +107,7 @@
 
   footer { margin-top: 20px; font-size: 12px; color: var(--muted); max-width: 70ch; }
   footer code { font-family: var(--mono); }
+  footer a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -116,7 +121,9 @@
     <div class="status" id="status">
       <span class="msg" id="status-msg">Starting…</span>
       <div class="bar"><div id="bar"></div></div>
+      <button id="load" hidden>Download the model (129 MB)</button>
     </div>
+    <div class="verified" id="verified" hidden></div>
 
     <label class="field" for="prompt">Prompt</label>
     <textarea id="prompt" spellcheck="false">The history of computing is often told as a story of hardware, but</textarea>
@@ -145,7 +152,10 @@
 
   <footer>Temperature 0 is greedy decoding, the mode the engine is validated in against the
     reference. Weights: <code>int8-wte-o8</code>, 129 MB, int8 with eight columns of the
-    embedding kept in fp32. Single-threaded.</footer>
+    embedding kept in fp32. Single-threaded. After the first visit the weights load from
+    this browser's cache.
+    <p><a href="https://github.com/anontriton/llm-ref-eng">Source, and how every layer of it
+    is validated</a> — PyTorch reference, C++ engine, WebAssembly.</p></footer>
 </main>
 
 <script type="module">
@@ -168,6 +178,7 @@ for (const text of EXAMPLES) {
 }
 
 let running = false;
+let loaded = false;  // Generate is only ever enabled once a model has loaded
 let nCtx = 0;
 let genText = null;
 const caret = document.createElement("span");
@@ -179,20 +190,29 @@ function status(msg, kind = "") {
 }
 function setRunning(on) {
   running = on;
-  $("go").disabled = on;
+  $("go").disabled = on || !loaded;
   $("stop").disabled = !on;
 }
 const mb = (n) => (n / 1e6).toFixed(1);
 const ms = (n) => n >= 1000 ? (n / 1000).toFixed(2) + " s" : n.toFixed(0) + " ms";
 
 worker.onmessage = ({ data: m }) => {
-  if (m.type === "progress") {
-    status(`Downloading weights  ${mb(m.loaded)} / ${mb(m.total)} MB`);
+  if (m.type === "progress" && m.what === "verify") {
+    status("Checking the weights' sha256…");
+  } else if (m.type === "progress") {
+    const verb = m.fromCache ? "Loading weights from this browser's cache" : "Downloading weights";
+    status(`${verb}  ${mb(m.loaded)} / ${mb(m.total)} MB`);
     $("bar").style.width = (100 * m.loaded / m.total).toFixed(1) + "%";
   } else if (m.type === "ready") {
-    status(`Ready. ${mb(m.weightsBytes)} MB loaded in ${ms(m.loadMs)}.`, "ready");
+    status(`Ready. ${mb(m.weightsBytes)} MB ${m.fromCache ? "loaded from cache" : "loaded"} in ${ms(m.loadMs)}.`, "ready");
+    const v = $("verified");
+    v.innerHTML = `Weights verified: sha256 <code>${m.sha256.slice(0, 16)}…</code>, ` +
+      `the exact file the published evaluation measured.`;
+    v.title = m.sha256;
+    v.hidden = false;
     $("s-engine").textContent = `${m.backend}, ${m.policy}`;
     nCtx = m.nCtx;
+    loaded = true;
     $("go").disabled = false;
   } else if (m.type === "start") {
     $("s-prompt").textContent = `${m.promptTokens} tokens`;
@@ -219,7 +239,9 @@ worker.onmessage = ({ data: m }) => {
     caret.remove();
     setRunning(false);
     status(m.message, "error ready");
-    $("go").disabled = false;
+    // A failed load leaves nothing to generate with; a failed generation
+    // leaves the model as it was.
+    $("go").disabled = !loaded;
   }
 };
 worker.onerror = (e) => status(`Worker failed: ${e.message}`, "error ready");
@@ -249,7 +271,21 @@ $("prompt").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !running && !$("go").disabled) $("go").click();
 });
 
-worker.postMessage({ type: "load" });
+// 129 MB and a few hundred MB of memory is a lot to take on a phone without
+// asking; desktops start at once.
+const mobile = navigator.userAgentData?.mobile === true ||
+  /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+if (mobile) {
+  status("This page runs GPT-2 on your device: a 129 MB download, and a few hundred MB of memory.");
+  $("load").hidden = false;
+  $("load").onclick = () => {
+    $("load").hidden = true;
+    status("Starting…");
+    worker.postMessage({ type: "load" });
+  };
+} else {
+  worker.postMessage({ type: "load" });
+}
 </script>
 </body>
 </html>

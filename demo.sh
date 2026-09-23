@@ -19,7 +19,9 @@
 #   4. scripts/quantize_weights.py --wte-outliers 8
 #                                       -> weights/gpt2-124m-int8-wte-o8.bin, 129 MB
 #   5. web/build.sh wasm_simd128        the C++ engine compiled to WebAssembly
-#   6. web/serve.sh                     a local web server, localhost only
+#   6. web/pack.py                      assemble the static site -- the same one
+#                                       GitHub Pages publishes
+#   7. web/serve.sh                     a local web server, localhost only
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")" && pwd)"
@@ -33,7 +35,7 @@ while [[ $# -gt 0 ]]; do
     --check) check_only=1 ;;
     --no-open) open_browser=0 ;;
     --port) port="${2:?--port needs a number}"; shift ;;
-    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -89,7 +91,7 @@ if [[ $check_only -eq 1 ]]; then
 fi
 
 # --- 1. Python environment ---------------------------------------------------
-step "1/6  Python environment (.venv)"
+step "1/7  Python environment (.venv)"
 py=".venv/bin/python"
 if [[ -x "$py" ]] && "$py" -c 'import torch, numpy' 2>/dev/null; then
   skip "torch and numpy in .venv"
@@ -103,17 +105,17 @@ else
 fi
 
 # --- 2-4. Weights -------------------------------------------------------------
-step "2/6  GPT-2 124M checkpoint (548 MB, checksum-verified)"
+step "2/7  GPT-2 124M checkpoint (548 MB, checksum-verified)"
 "$py" scripts/download_weights.py | sed 's/^/  /'
 
-step "3/6  Convert to the engine's format"
+step "3/7  Convert to the engine's format"
 if [[ -f weights/gpt2-124m.bin ]]; then
   skip "weights/gpt2-124m.bin"
 else
   "$py" scripts/convert_weights.py | sed 's/^/  /'
 fi
 
-step "4/6  Quantize for the browser (int8, 129 MB)"
+step "4/7  Quantize for the browser (int8, 129 MB)"
 if [[ -f weights/gpt2-124m-int8-wte-o8.bin ]]; then
   skip "weights/gpt2-124m-int8-wte-o8.bin"
 else
@@ -121,7 +123,7 @@ else
 fi
 
 # --- 5. The engine, as WebAssembly -------------------------------------------
-step "5/6  Build the engine for WebAssembly"
+step "5/7  Build the engine for WebAssembly"
 # Incremental: a no-op when nothing changed. The first run also compiles
 # Emscripten's system libraries, which is the slow part.
 mkdir -p web/build
@@ -129,8 +131,14 @@ web/build.sh wasm_simd128 >web/build/build.log 2>&1 ||
   { printf '  %s✗ build failed; the last lines of web/build/build.log:%s\n' "$red" "$reset"; tail -20 web/build/build.log; exit 1; }
 ok "web/build/engine-wasm_simd128/tools/gpt2_web.wasm"
 
-# --- 6. Serve ----------------------------------------------------------------
-step "6/6  Serve the demo"
+# --- 6. The site -------------------------------------------------------------
+step "6/7  Assemble the site"
+# Refuses to build unless the weights are byte-identical to the pinned,
+# evaluated file -- the same check the GitHub Pages deploy makes.
+python3 web/pack.py | sed 's/^/  /'
+
+# --- 7. Serve ----------------------------------------------------------------
+step "7/7  Serve the demo"
 free_port() {
   python3 - "$1" <<'EOF'
 import socket, sys
@@ -143,7 +151,7 @@ for p in range(int(sys.argv[1]), int(sys.argv[1]) + 50):
 EOF
 }
 port="$(free_port "${port:-8000}")"
-url="http://localhost:$port/web/demo/"
+url="http://localhost:$port/"
 
 if [[ $open_browser -eq 1 ]]; then
   # `open` only on macOS: on Linux it is often openvt, which is not a browser.

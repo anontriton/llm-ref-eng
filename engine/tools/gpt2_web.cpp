@@ -1,4 +1,4 @@
-// The browser's entry point: a C API over the engine, for web/demo/worker.js.
+// The browser's entry point: a C API over the engine, for web/worker.js.
 //
 // Like the other tools this is a thin driver, not a second engine -- Weights,
 // Model and KVCache do all the work, the same code the oracle validates. What

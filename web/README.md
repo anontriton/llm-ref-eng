@@ -8,27 +8,32 @@ oracle as native, run under Node.
 
     web/build.sh wasm_simd128                          # -> web/build/engine-wasm_simd128/
     .venv/bin/python scripts/quantize_weights.py --wte-outliers 8
-    web/serve.sh                                       # -> http://localhost:8000/web/demo/
+    python3 web/pack.py                                # -> web/build/site/
+    web/serve.sh                                       # -> http://localhost:8000/
 
 `./demo.sh`, at the repository root, runs all of that from a fresh clone --
-prerequisites checked first, finished steps skipped.
+prerequisites checked first, finished steps skipped. The same site is live at
+**https://anontriton.github.io/llm-ref-eng/**, published by CI (below).
 
 `build.sh [scalar|wasm_simd128]` configures `engine/` with `emcmake` and builds
 every tool and test as a `.js` + `.wasm` pair; it finds `emcc` even where Arch
-leaves it off PATH. `serve.sh` serves the repository root on localhost, since
-the page reaches into `web/`, `web/build/` and `weights/`.
+leaves it off PATH. `pack.py` assembles the static site and `serve.sh` serves
+it on localhost -- the same directory GitHub Pages publishes.
 
 ## What is here
 
 | File | Role |
 |---|---|
-| `build.sh`, `serve.sh` | build a backend; serve the demo |
-| `demo/index.html` | the page: prompt, sampling controls, streamed output, timings |
-| `demo/worker.js` | downloads the weights, tokenizes, runs prefill and decode, streams text |
+| `build.sh` | build a backend |
+| `pack.py`, `weights.lock.json` | assemble the static site; the one weight file it may contain |
+| `serve.sh` | serve the site on localhost |
+| `index.html` | the page: prompt, sampling controls, streamed output, timings |
+| `worker.js` | downloads and verifies the weights, tokenizes, runs prefill and decode, streams text |
 | `engine.js` | `engine/tools/gpt2_web.cpp`'s C API wrapped for JavaScript |
 | `sampling.js` | greedy (argmax, first index on ties), temperature + top-k, a seeded RNG |
 | `tokenizer.js` | GPT-2's byte-level BPE, hand-written, no dependencies |
 | `test_web.mjs` | holds the browser module to the command-line engine |
+| `test_page.mjs` | the built site in headless Chrome -- the last gate before a deploy |
 | `test_tokenizer.mjs`, `tokenizer_cases.json` | holds the tokenizer to Hugging Face's ids |
 
 `engine.js`, `sampling.js` and `tokenizer.js` run unchanged in the page and in
@@ -77,11 +82,15 @@ prompts to equal `gpt2_generate.js`'s -- on the fp32 file, which chains back to
 repeats, and that one token past the 1024-token context is an error with a
 reason after which the engine still works.
 
-**The page shows exactly that output.** Driven in headless Chrome over the
-DevTools protocol: greedy on "The capital of France is" puts on screen exactly
-the text `gpt2_generate`'s ids decode to; Stop ends a sampling run cleanly; no
-console errors; dark mode and a 390 px viewport lay out without overflow; and
-throttled to 30 MB/s, the progress bar climbs to 129.3 MB over 4.3 s.
+**The page shows exactly that output.** `node web/test_page.mjs` serves the
+built site and drives it in headless Chrome over the DevTools protocol, with no
+dependencies: the page loads and shows the verified sha256; greedy on "The
+capital of France is" puts on screen exactly the text `gpt2_generate`'s ids
+decode to; Stop ends a sampling run; a reload loads the weights from the
+browser's cache; one flipped byte in one weight part is refused, and Generate
+stays disabled; a phone asks before downloading and lays out in 390 px; and
+nothing reaches the console. Throttled to 30 MB/s in an earlier run, the
+progress bar climbed to 129.3 MB over 4.3 s.
 
 ## The tokenizer
 
@@ -153,6 +162,29 @@ under Node and records it as `wasm32`.
 - **In Chrome** the page decodes at 21 ms/token, about 47 tokens/s, a little
   faster than the same module under Node; prefill takes 94 ms for 5 tokens.
   The weights load in 250 ms from a local server.
+
+## Hosting
+
+**https://anontriton.github.io/llm-ref-eng/** is published by
+`.github/workflows/pages.yml`, and only after the whole gate passes on that
+commit, on a clean runner, from the checkpoint up: the wasm unit tests, the
+oracle comparison and 50 greedy steps on the shipped backend, the tokenizer and
+web-module tests, the shipped weights' eval against fp32, `pack.py`'s pin
+check, and `test_page.mjs`. Pull requests run the same gate and publish
+nothing.
+
+- **The weights are cut into 32 MiB parts.** GitHub refuses files over 100 MB;
+  the file is 129 MB. `model/weights.json` lists the parts in order, with the
+  whole file's size and sha256.
+- **The shipped file is pinned.** `pack.py` refuses to build the site from any
+  file but the one in `weights.lock.json` -- the file
+  `eval/results/20260922T231318Z-1bb173c-int8-wte-o8.json` measured, rebuilt in
+  CI byte for byte -- and the page hashes what it downloaded before the engine
+  sees a byte, and says so on screen.
+- **Repeat visits load from the browser's cache**, keyed by that sha256, so a
+  new file can never be served from an old one's entries.
+- **Phones ask first.** 129 MB and a few hundred MB of memory is a lot to
+  take unasked.
 
 ## Decisions
 

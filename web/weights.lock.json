@@ -1,0 +1,8 @@
+{
+  "comment": "The weight file the hosted demo ships, pinned to the file eval/results/20260922T231318Z-1bb173c-int8-wte-o8.json measured. web/pack.py refuses any other; the page checks the same sha256 after downloading.",
+  "file": "weights/gpt2-124m-int8-wte-o8.bin",
+  "policy": "int8-wte-o8",
+  "bytes": 129329796,
+  "sha256": "c32910dbfea986002e2dfc18daecb19c531edd3ecd51c8681e1e588423dcf577",
+  "eval_result": "eval/results/20260922T231318Z-1bb173c-int8-wte-o8.json"
+}

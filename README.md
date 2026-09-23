@@ -22,6 +22,14 @@ reference.
 
 ## Try it
 
+**Live: [anontriton.github.io/llm-ref-eng](https://anontriton.github.io/llm-ref-eng/)** --
+GPT-2 running in your browser tab. It downloads 129 MB once, checks its sha256
+against the file the evaluation measured, and runs locally; nothing you type
+leaves the page. The page is republished by CI only when the full validation
+passes on that commit.
+
+To run it yourself:
+
     ./demo.sh
 
 One command, from a fresh clone. It checks the prerequisites first -- Python
@@ -55,6 +63,7 @@ the project built them:
 | [`engine/src/backend_avx2.cpp`](engine/src/backend_avx2.cpp) | AVX2 that reproduces scalar results exactly -- and why it refuses FMA to do so |
 | [`eval/metrics.py`](eval/metrics.py) | judging a quantized model with four metrics, because perplexity alone would have shipped a broken one |
 | [`web/tokenizer.js`](web/tokenizer.js) | GPT-2's tokenizer in 191 lines of dependency-free JavaScript |
+| [`.github/workflows/pages.yml`](.github/workflows/pages.yml) | the gate: the live demo is published only after the oracle, the eval and a browser test pass on a clean runner |
 | [`docs/findings.md`](docs/findings.md) | what building it taught, with the measurements |
 
 The commit history is written to be read too: each commit says what it proved

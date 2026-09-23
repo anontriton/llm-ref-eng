@@ -25,7 +25,11 @@ export class Engine {
   // async iterable of Uint8Array -- a fetch body reader in the page, a file
   // stream in Node. Each chunk is copied into wasm memory as it arrives, so
   // the file is never held twice.
-  async loadWeights(total, chunks, onProgress) {
+  //
+  // `verify`, if given, is awaited with a view of the complete file before the
+  // engine parses it; throwing from it aborts the load. The page uses it to
+  // check the sha256 without a second 129 MB copy.
+  async loadWeights(total, chunks, onProgress, verify) {
     const ptr = this.m._gpt2_blob_alloc(total);
     if (!ptr) throw new Error(this.error());
     let at = 0;
@@ -37,6 +41,7 @@ export class Engine {
       onProgress?.(at, total);
     }
     if (at !== total) throw new Error(`weights: got ${at} of ${total} bytes`);
+    if (verify) await verify(this.m.HEAPU8.subarray(ptr, ptr + total));
     if (!this.m._gpt2_load()) throw new Error(this.error());
     this.vocabSize = this.m._gpt2_vocab_size();
     this.nCtx = this.m._gpt2_n_ctx();

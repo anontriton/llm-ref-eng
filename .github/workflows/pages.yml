@@ -1,0 +1,122 @@
+# Validate the demo, then publish it to GitHub Pages.
+#
+# The deploy is gated on the same proof the repository asks of every engine
+# change: nothing reaches the public page unless, on this commit, the wasm
+# engine passes the PyTorch oracle, the shipped weights pass their eval and are
+# byte-identical to the file eval/results/ measured, and the page itself runs
+# correctly in Chrome. Pull requests run the validation and publish nothing.
+name: Validate and deploy demo
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: Emscripten
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install latest
+          "$RUNNER_TEMP/emsdk/emsdk" activate latest
+          echo "EMSDK=$RUNNER_TEMP/emsdk" >> "$GITHUB_ENV"
+          echo "EM_CONFIG=$RUNNER_TEMP/emsdk/.emscripten" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+
+      - name: Python environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -q --index-url https://download.pytorch.org/whl/cpu torch
+          .venv/bin/python -m pip install -q numpy
+
+      - name: Cache the GPT-2 checkpoint
+        uses: actions/cache@v4
+        with:
+          path: weights/gpt2-124m
+          key: gpt2-124m-${{ hashFiles('scripts/weights.lock.json') }}
+
+      - name: Weights -- download, convert, quantize
+        run: |
+          .venv/bin/python scripts/download_weights.py
+          .venv/bin/python scripts/convert_weights.py
+          .venv/bin/python scripts/quantize_weights.py --wte-outliers 8
+
+      - name: The oracle -- regenerate the reference activations
+        run: |
+          .venv/bin/python reference/dump.py
+          .venv/bin/python scripts/export_runs.py
+
+      - name: Build -- the wasm engine, and native for the eval
+        run: |
+          emcc --version | head -1
+          web/build.sh wasm_simd128
+          cmake -S engine -B engine/build-avx2 -G Ninja -DGPT2_BACKEND=avx2
+          cmake --build engine/build-avx2
+
+      - name: Gate -- wasm engine against the oracle
+        run: |
+          ctest --test-dir web/build/engine-wasm_simd128 --output-on-failure
+          node web/build/engine-wasm_simd128/tools/gpt2_dump.js --out web/build/dumps
+          .venv/bin/python oracle/compare.py web/build/dumps/manifest.json
+          .venv/bin/python oracle/check_greedy.py --kv-cache \
+            --engine web/build/engine-wasm_simd128/tools/gpt2_generate.js
+
+      - name: Gate -- tokenizer and web module
+        run: |
+          node web/test_tokenizer.mjs
+          node web/test_web.mjs
+
+      - name: Gate -- the shipped weights pass their eval
+        run: |
+          .venv/bin/python eval/run.py --out eval/runs/fp32 --no-write
+          .venv/bin/python eval/run.py --out eval/runs/int8-wte-o8 \
+            --weights weights/gpt2-124m-int8-wte-o8.bin \
+            --reference eval/runs/fp32 --no-write
+
+      - name: Gate -- assemble the site, the page in Chrome
+        run: |
+          python3 web/pack.py
+          node web/test_page.mjs
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: web/build/site
+
+  deploy:
+    needs: validate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

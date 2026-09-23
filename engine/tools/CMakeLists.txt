@@ -26,7 +26,7 @@ if(EMSCRIPTEN)
   endforeach()
 
   # Phase 5: the browser's entry point, a C API loaded as an ES module by
-  # web/demo/worker.js. Also runs under Node, which is how web/test_web.mjs
+  # web/worker.js. Also runs under Node, which is how web/test_web.mjs
   # tests it -- so no NODERAWFS, which would tie it to Node, and no main.
   add_executable(gpt2_web gpt2_web.cpp)
   target_link_libraries(gpt2_web PRIVATE gpt2)

@@ -62,7 +62,7 @@ there rather than glibc, and the two disagree in the last bits.
     gpt2_kernelbench  per-shape matmul timings on the real weights; bench/
                    says whether the engine got faster, this says which kernel
     gpt2_web       Emscripten only: the browser's C API over Weights, Model and
-                   KVCache, for web/demo/; see web/README.md
+                   KVCache, for the demo page; see web/README.md
 
 The command-line tools take `--threads N` (default 1), and every tool reads the
 weight policy -- fp32, int8, int8-wte-o8 -- from the file itself, never from a

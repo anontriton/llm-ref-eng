@@ -140,8 +140,11 @@ def main() -> int:
 
     text = json.dumps(result, indent=2) + "\n"
     print(text)
+    # The exit code is the verdict whether or not anything is written: a run
+    # that fails its metrics must fail a script or CI step that calls it.
+    status = 0 if (verdict is None or verdict["pass"]) else 1
     if args.no_write:
-        return 0
+        return status
 
     parts = [started.strftime("%Y%m%dT%H%M%SZ"), sha[:7], measured["policy"]]
     if dirty:
@@ -150,7 +153,7 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text)
     print(f"wrote {out.relative_to(ROOT)}", file=sys.stderr)
-    return 0 if (verdict is None or verdict["pass"]) else 1
+    return status
 
 
 if __name__ == "__main__":

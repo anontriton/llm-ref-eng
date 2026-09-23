@@ -78,12 +78,15 @@ Commit to bench/results/. Built BEFORE optimization starts.
 - `web/` - Emscripten build + demo page
 - `scripts/` - weight download, format conversion, quantization, pinned inputs
 - `docs/` - findings, and the procedure for maintaining the repository
+- `.github/workflows/pages.yml` - validates every push; deploys the demo to
+  GitHub Pages only when the whole gate passes
 
 Generated artifacts (weights, `.npy` activation dumps, build dirs) are
 gitignored. The committed exceptions are `bench/results/*.json` and
 `eval/results/*.json`, both commit-tagged, plus the pinned inputs they depend
-on: `bench/prompts.tsv`, `eval/corpus.tsv`, `eval/calib.tsv`, and the
-tokenizer's fixture `web/tokenizer_cases.json`.
+on: `bench/prompts.tsv`, `eval/corpus.tsv`, `eval/calib.tsv`, the
+tokenizer's fixture `web/tokenizer_cases.json`, and `web/weights.lock.json`,
+the sha256 of the only weight file the hosted demo may ship.
 
 ## Oracle contract
 The oracle is a directory of `.npy` tensors plus `oracle/manifest.json`

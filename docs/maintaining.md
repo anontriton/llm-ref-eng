@@ -16,6 +16,7 @@ directories and eval dumps are all gitignored and have to be regenerated; what
 | `scripts/weights.lock.json` -- checkpoint checksum | `weights/` (download, convert, quantize) |
 | `bench/prompts.tsv`, `eval/corpus.tsv`, `eval/calib.tsv` | -- pinned inputs, never regenerate casually |
 | `web/tokenizer_cases.json` -- HF's ids for the tokenizer's edge cases | (`scripts/export_tokenizer_cases.py`) |
+| `web/weights.lock.json` -- sha256 of the one weight file the hosted demo may ship | -- change only with a new eval result |
 | `bench/results/*.json`, `eval/results/*.json` | -- the record; commit-tagged |
 | -- | `engine/runs.tsv`, `engine/build*/`, `engine/dumps*/`, `eval/runs/`, `web/build/` |
 
@@ -56,6 +57,12 @@ bit-identical to the wasm scalar build, not merely within tolerance:
         --engine web/build/engine-wasm_simd128/tools/gpt2_generate.js
     node web/test_web.mjs
     node web/test_tokenizer.mjs
+    python3 web/pack.py && node web/test_page.mjs
+
+Every push to `main` runs this gate again in GitHub Actions
+(`.github/workflows/pages.yml`) -- on a clean runner, from the checkpoint up --
+and publishes the demo only if all of it passes; pull requests run it and
+publish nothing.
 
 Watch the budget percentage `compare.py` prints, not just the pass. It has been
 52.0% natively since Phase 2 and stayed there through four optimizations, and
@@ -68,6 +75,15 @@ count -- and compare against a result with the same `config` and `prompt`.
 Commit anything else a run writes (an eval result, say) before benchmarking,
 or the tree is dirty. For anything quantized,
 `eval/metrics.py` is the authority and `compare.py` will refuse the run.
+
+## Changing the demo's weights
+
+`web/pack.py` refuses to build the site from any weight file but the one
+pinned in `web/weights.lock.json`, and the page re-checks the same sha256 after
+downloading. That is deliberate: the hosted demo can only ever show a file an
+eval result in `eval/results/` measured. To ship a different file, commit its
+eval result first, then update the pin -- file, bytes, sha256, and which result
+measured it -- in the same change.
 
 ## Reproduce everything
 
@@ -114,4 +130,6 @@ From the repo root, with the `.venv` described in CLAUDE.md:
         --weights weights/gpt2-124m-int8-wte-o8.bin --reference eval/runs/fp32
     node web/test_tokenizer.mjs
     node web/test_web.mjs
-    web/serve.sh                                           # localhost:8000/web/demo/
+    python3 web/pack.py                                    # the site, weights pinned
+    node web/test_page.mjs                                 # the page, in headless Chrome
+    web/serve.sh                                           # localhost:8000/
