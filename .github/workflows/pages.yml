@@ -51,7 +51,9 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install -q --index-url https://download.pytorch.org/whl/cpu torch
-          .venv/bin/python -m pip install -q numpy
+          # transformers tokenizes the oracle's prompts (reference/dump.py) and
+          # prints check_greedy's text -- tokenization only, never the model.
+          .venv/bin/python -m pip install -q numpy transformers
 
       - name: Cache the GPT-2 checkpoint
         uses: actions/cache@v4
