@@ -97,18 +97,51 @@ function findChrome() {
 }
 const CHROME = findChrome();
 
-async function browser() {
-  const profile = mkdtempSync(join(tmpdir(), "gpt2-page-"));
-  const port = 9300 + Math.floor(Math.random() * 500);
-  const args = ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
-                "--no-first-run", "--no-default-browser-check", "about:blank"];
-  if (process.env.CI) args.unshift("--no-sandbox");  // CI runners lack the sandbox's namespaces
-  const proc = spawn(CHROME, args, { stdio: "ignore" });
-  let targets;
-  for (let i = 0; i < 100 && !targets; ++i) {
-    try { targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json(); } catch { await sleep(100); }
+// A port nothing is listening on, from the OS rather than a guess.
+function freePort() {
+  return new Promise((resolve) => {
+    const s = createServer().listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+// Start Chrome and wait for its DevTools endpoint. A cold start on a CI runner
+// has taken more than 10 s, so allow 30, retry the launch once, and if Chrome
+// dies, say what it printed rather than failing later on an undefined.
+async function launch() {
+  for (let attempt = 1; attempt <= 2; ++attempt) {
+    const profile = mkdtempSync(join(tmpdir(), "gpt2-page-"));
+    const port = await freePort();
+    const args = ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
+                  "--no-first-run", "--no-default-browser-check", "about:blank"];
+    if (process.env.CI) args.unshift("--no-sandbox");  // CI runners lack the sandbox's namespaces
+    const proc = spawn(CHROME, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    let exited = false;
+    proc.stderr.on("data", (d) => { stderr = (stderr + d).slice(-2000); });
+    proc.once("exit", () => { exited = true; });
+    for (let i = 0; i < 300 && !exited; ++i) {
+      try {
+        const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+        const page = targets.find((t) => t.type === "page");
+        if (page) return { proc, port, profile, page };
+      } catch { /* not up yet */ }
+      await sleep(100);
+    }
+    proc.kill("SIGKILL");
+    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    console.log(`  (Chrome did not start, attempt ${attempt}${exited ? ", it exited" : ""})` +
+                (stderr.trim() ? `\n    ${stderr.trim().split("\n").slice(-5).join("\n    ")}` : ""));
   }
-  const ws = new WebSocket(targets.find((t) => t.type === "page").webSocketDebuggerUrl);
+  console.error("Chrome would not start; see above");
+  process.exit(1);
+}
+
+async function browser() {
+  const { proc, port, profile, page } = await launch();
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((r) => (ws.onopen = r));
   let id = 0;
   const pending = new Map();
