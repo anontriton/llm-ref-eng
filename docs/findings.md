@@ -255,5 +255,6 @@ both cases fail with the live symptom; against the fix, both pass.
 - The generated-ids tripwire in `bench/results/` means something weaker under a
   quantized policy: differing ids are expected, and `eval/metrics.py` is the
   authority instead.
-- The demo is served locally from the repository root by `web/serve.sh`; the
-  weights are not hosted anywhere.
+- The weights are not in the repository. The hosted demo's 129 MB file is
+  rebuilt from Hugging Face by CI on each deploy and published only with the
+  GitHub Pages site, so the demo depends on both staying reachable.
