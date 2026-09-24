@@ -22,6 +22,10 @@ No framework, no BLAS, no model code from Hugging Face in anything that runs --
 HF appears only as a check on the hand-written reference, never as the
 reference.
 
+**Read the writeup:** [Showing its work: a GPT-2 engine proven correct at every
+step](docs/writeup.md) -- the whole project as an article, written for readers
+new to machine learning.
+
 ## Try it
 
 **Live: [anontriton.github.io/llm-ref-eng](https://anontriton.github.io/llm-ref-eng/)** --
@@ -183,7 +187,7 @@ it proves are in [docs/maintaining.md](docs/maintaining.md).
 | [`eval/`](eval/) | the quantized-model judge, the pinned corpus, results |
 | [`web/`](web/) | the wasm build, the tokenizer, the demo page |
 | [`scripts/`](scripts/) | weight download, conversion, quantization, pinned-input export |
-| [`docs/`](docs/) | findings, and how to maintain the repository |
+| [`docs/`](docs/) | the writeup, findings, and how to maintain the repository |
 
 Each directory's README says what lives there and how to run it. The
 project's rules -- tolerances, phase order, what may and may not be optimized
