@@ -268,7 +268,7 @@ the JSON said so.
 Phase 6 exit criteria, met: every document is current, every documented
 command runs, and the README is written for someone arriving cold. The README
 says what the project is, how correctness is proven, and what it measured;
-`docs/findings.md` holds the findings, ten now, and the known limits;
+`docs/findings.md` holds the findings, eleven now, and the known limits;
 `docs/maintaining.md` holds the procedure for changing the engine without
 breaking what it proves. `./demo.sh` is the one-command path to the browser
 demo from a fresh clone, prerequisites checked before anything is downloaded.
