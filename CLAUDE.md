@@ -294,8 +294,8 @@ relative link and anchor in the docs resolves.
 ## After Phase 6
 
 Work after the phases closed, done on an Apple M4 Max (arm64, macOS, Homebrew
-Emscripten 6.0.10) rather than the x86 machine above, so AVX2 was compiled for
-x86-64 but not run, and timings are ratios. `docs/findings.md` 12-16 has the
+Emscripten 6.0.10) rather than the x86 machine above, which cannot run AVX2,
+so AVX2 is validated in CI rather than locally, and timings are ratios. `docs/findings.md` 12-16 has the
 measurements. Each item was validated with `oracle/identical.py` against the
 commit before it unless it says otherwise.
 
@@ -314,12 +314,16 @@ commit before it unless it says otherwise.
   `oracle/test_compare.py` passes 25/25.
 - `GPT2_NUMERICS=fast`: FMA / relaxed-SIMD madd. Passes the oracle and the eval
   against the exact engine (x1.00000, 100.000% top-1) and is barely faster on
-  the M4's scalar and wasm paths; the AVX2 case it was built for is unmeasured.
+  the M4's scalar and wasm paths. Its AVX2 path passes the oracle in CI; its
+  speed there, the case it was built for, is unmeasured.
 - wasm threads: a pthreads build loaded by cross-origin-isolated pages, which
   `web/coi-sw.js` arranges on GitHub Pages. Bit-identical to the
   single-threaded build; prefill 5.4x at 8 threads, decode unchanged.
 - CI: emsdk pinned to 6.0.10; new gates for the oracle self-tests, the
-  KV-cached and last-logits dumps, and the threaded build's bit-identity.
+  KV-cached and last-logits dumps, the threaded build's bit-identity, and
+  native AVX2 -- against the oracle, bit-identical to native scalar (738/738,
+  re-hashed), greedy 50/50 -- with the fast tier's AVX2 build against the
+  oracle's tolerance. The runners have AVX2 and FMA; the M4 has neither.
 
 The committed `oracle/manifest.json` gains the `context` run only; the five
 original runs' records are the x86 machine's, unchanged (arm64 torch writes

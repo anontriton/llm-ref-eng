@@ -352,9 +352,11 @@ and in wasm.
 
 And it is barely faster. On the M4 Max, prefill 654 -> 637 ms native and
 853 -> 803 ms in wasm; decode, which streams weights, unchanged. The case it
-was built for is AVX2, where the FMA path (37 fused instructions, against 0 in
-the exact build) compiles but has not been run -- this round of work was on
-arm64, where the native engine has only the scalar backend.
+was built for is AVX2, where the FMA path has 37 fused instructions against 0
+in the exact build. This round of work was on arm64, which cannot run it; CI
+can, and holds it to the oracle on every push -- it passes, whole-sequence and
+KV-cached. How much faster it is there is still unmeasured: a shared CI runner
+is no place to time anything.
 
 ## Known limits
 
@@ -362,9 +364,10 @@ arm64, where the native engine has only the scalar backend.
   whole-sequence comparison is reported, because no fp32 implementation meets
   the rule there (finding 13).
 - Threads do not speed up decode, native or wasm (finding 15).
-- The fast tier's AVX2 path, and the AVX2 backend since findings 14-16, have
-  been compiled for x86-64 but not run outside CI, which runs AVX2 only for the
-  eval. They need an oracle run on an AVX2 machine.
+- The AVX2 backend since findings 12-16 has been validated in CI only --
+  against the oracle, bit-identical to native scalar, 50/50 greedy -- not on
+  the machine its benchmarks came from, so `bench/results/` has no AVX2 figure
+  for these changes, and the fast tier's AVX2 speed is unmeasured.
 - The page test exercises the threaded path; the fallback for a browser that
   refuses isolation is the single-threaded module `test_web.mjs` covers, not a
   page-level check.

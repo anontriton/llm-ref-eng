@@ -176,7 +176,8 @@ under Node and records it as `wasm32`.
 `.github/workflows/pages.yml`, and only after the whole gate passes on that
 commit, on a clean runner, from the checkpoint up: the wasm unit tests, the
 oracle comparison, whole-sequence and KV-cached, and 50 greedy steps on the
-shipped backend, the threaded build's bit-identity to it, the tokenizer and
+shipped backend, the threaded build's bit-identity to it, native AVX2 against
+the oracle and bit-identical to native scalar, the tokenizer and
 web-module tests, the shipped weights' eval against fp32, `pack.py`'s pin
 check, and `test_page.mjs`. Emscripten is pinned (6.0.10): the wasm build's
 bits depend on its libm, so a new toolchain is a reviewed change. Pull requests run the same gate and publish

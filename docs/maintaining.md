@@ -73,7 +73,10 @@ bit-identical to the wasm scalar build, not merely within tolerance:
 Every push to `main` runs this gate again in GitHub Actions
 (`.github/workflows/pages.yml`) -- on a clean runner, from the checkpoint up --
 and publishes the demo only if all of it passes; pull requests run it and
-publish nothing. CI regenerates the PyTorch reference on its own CPU and torch
+publish nothing. That includes the native AVX2 proof above -- oracle,
+bit-identity to native scalar, greedy -- and the fast tier's AVX2 build
+against the oracle, so on a machine without AVX2 (an arm64 Mac) run the rest
+locally and open a pull request for that part. CI regenerates the PyTorch reference on its own CPU and torch
 version, so its oracle budget figure is its own -- 40.8% at the first deploy --
 and not comparable to the 52.0% and 58.1% measured here.
 
