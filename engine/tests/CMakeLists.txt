@@ -15,8 +15,8 @@ endforeach()
 
 # Without -pthread, Emscripten's std::thread constructor throws, so the pool
 # cannot exist and there is nothing for test_threading to test. Disabled rather
-# than dropped, so ctest still lists it -- as not run -- until the wasm build
-# gets threads.
-if(EMSCRIPTEN)
+# than dropped, so ctest still lists it -- as not run -- in a wasm build
+# without GPT2_WASM_THREADS.
+if(EMSCRIPTEN AND NOT GPT2_WASM_THREADS)
   set_tests_properties(test_threading PROPERTIES DISABLED TRUE)
 endif()

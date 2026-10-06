@@ -12,6 +12,11 @@
 //
 // Also: seeded sampling repeats itself, and running off the end of the
 // context comes back as an error rather than a crash.
+//
+// All of it twice: for the single-threaded module, and for the threaded one
+// (web/build.sh wasm_simd128 mt) at 8 threads, which a cross-origin-isolated
+// page loads instead. Both are held to the same single-threaded
+// gpt2_generate -- thread count is not allowed to change an id.
 import { execFileSync } from "node:child_process";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -22,6 +27,10 @@ import { argmax, rng, sample } from "./sampling.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BUILD = join(ROOT, "web/build/engine-wasm_simd128/tools");
+const MODULES = [
+  { build: BUILD, threads: 1 },
+  { build: join(ROOT, "web/build/engine-wasm_simd128-mt/tools"), threads: 8 },
+];
 const STEPS = 50;
 const RUNS = ["capital", "code", "newline"];
 
@@ -31,10 +40,16 @@ const check = (ok, what) => {
   if (!ok) ++failures;
 };
 
-const { default: createGpt2 } = await import(join(BUILD, "gpt2_web.mjs"));
 const runs = Object.fromEntries(
   JSON.parse(readFileSync(join(ROOT, "oracle/manifest.json"), "utf8"))
     .runs.map((r) => [r.name, r.input_ids]));
+
+for (const { build, threads } of MODULES) {
+if (!existsSync(join(build, "gpt2_web.mjs"))) {
+  check(false, `${build} is missing -- web/build.sh wasm_simd128${threads > 1 ? " mt" : ""}`);
+  continue;
+}
+const { default: createGpt2 } = await import(join(build, "gpt2_web.mjs"));
 
 for (const file of ["weights/gpt2-124m.bin", "weights/gpt2-124m-int8-wte-o8.bin"]) {
   const path = join(ROOT, file);
@@ -48,7 +63,9 @@ for (const file of ["weights/gpt2-124m.bin", "weights/gpt2-124m-int8-wte-o8.bin"
   // behind a network fetch.
   await engine.loadWeights(statSync(path).size,
                            createReadStream(path, { highWaterMark: 1 << 20 }));
-  console.log(`${file}: ${engine.policy}, ${engine.backend}, ` +
+  const got = engine.setThreads(threads);
+  check(got === threads, `threads: asked for ${threads}, running ${got}`);
+  console.log(`${file}: ${engine.policy}, ${engine.backend}, ${got} thread(s), ` +
               `loaded in ${(performance.now() - t0).toFixed(0)} ms`);
 
   for (const name of RUNS) {
@@ -98,6 +115,7 @@ for (const file of ["weights/gpt2-124m.bin", "weights/gpt2-124m-int8-wte-o8.bin"
   check(message.length > 0, `past n_ctx: throws "${message}"`);
   engine.reset();
   check(argmax(engine.forward(runs.capital)) > 0, "usable after the error and a reset");
+}
 }
 
 console.log(failures === 0 ? "\nWEB ENGINE PASSED" : `\nWEB ENGINE FAILED  (${failures})`);

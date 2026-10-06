@@ -109,8 +109,9 @@ message(STATUS "gpt2: backend ${GPT2_BACKEND}, numerics ${GPT2_NUMERICS}")
 # - Exceptions: Emscripten turns catching off by default, and every tool
 #   reports failure through a catch in main. Native wasm exceptions, not the
 #   JS-emulated kind, which wraps every call that might throw.
-# - No -pthread yet. The pool is never built at --threads 1; asking for more
-#   fails at the first std::thread, loudly.
+# - Threads only with GPT2_WASM_THREADS=ON, below. Without it the pool is never
+#   built at --threads 1, and asking for more fails at the first std::thread,
+#   loudly.
 if(EMSCRIPTEN)
   add_compile_options(-fwasm-exceptions)
   add_link_options(
@@ -119,6 +120,28 @@ if(EMSCRIPTEN)
     -sMAXIMUM_MEMORY=4GB
     -sSTACK_SIZE=1MB)
   set(GPT2_NODE_LINK_OPTIONS -sNODERAWFS=1 -sEXIT_RUNTIME=1)
+endif()
+
+# wasm threads: std::thread over Web Workers and a SharedArrayBuffer, which a
+# browser grants only to a cross-origin-isolated page (web/coi-sw.js arranges
+# that on GitHub Pages). Everything is compiled with -pthread -- atomics and
+# shared memory are a property of the whole module, not of one file.
+#
+# The workers are created when the module loads, not when the pool asks: a
+# browser starts a Worker only once the creating thread returns to its event
+# loop, and threads::set_count() blocks without returning. So
+# GPT2_WASM_POOL_THREADS workers are made up front -- the most --threads can
+# ask for is one more, the calling thread -- and STRICT=2 makes asking for
+# more than that an error rather than a hang.
+option(GPT2_WASM_THREADS "wasm: build with pthreads" OFF)
+set(GPT2_WASM_POOL_THREADS 7 CACHE STRING "wasm: workers created at load")
+if(EMSCRIPTEN AND GPT2_WASM_THREADS)
+  add_compile_options(-pthread)
+  add_link_options(
+    -pthread
+    -sPTHREAD_POOL_SIZE=${GPT2_WASM_POOL_THREADS}
+    -sPTHREAD_POOL_SIZE_STRICT=2)
+  add_compile_definitions(GPT2_WASM_MAX_THREADS=${GPT2_WASM_POOL_THREADS}+1)
 endif()
 
 find_package(Threads REQUIRED)

@@ -8,8 +8,11 @@ directory, built by this, so the thing tested is the thing shipped:
 
     index.html, worker.js,          the page and its modules, copied from web/
     engine.js, sampling.js,
-    tokenizer.js
+    tokenizer.js, coi-sw.js
     wasm/gpt2_web.{mjs,wasm}        the engine, from web/build.sh wasm_simd128
+    wasm-mt/gpt2_web.{mjs,wasm}     the same with threads, from
+                                    web/build.sh wasm_simd128 mt -- loaded when
+                                    the page is cross-origin isolated
     model/vocab.json, merges.txt    the tokenizer's files
     model/weights.json              the weights' manifest: policy, size, sha256,
                                     and the parts, in order
@@ -39,10 +42,12 @@ ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
 LOCK = WEB / "weights.lock.json"
 ENGINE = WEB / "build" / "engine-wasm_simd128" / "tools"
+ENGINE_MT = WEB / "build" / "engine-wasm_simd128-mt" / "tools"
 TOKENIZER = ROOT / "weights" / "gpt2-124m"
 DEFAULT_OUT = WEB / "build" / "site"
 
-PAGE_FILES = ["index.html", "worker.js", "engine.js", "sampling.js", "tokenizer.js"]
+PAGE_FILES = ["index.html", "worker.js", "engine.js", "sampling.js", "tokenizer.js",
+              "coi-sw.js"]
 PART_BYTES = 32 << 20  # 32 MiB: far under GitHub's limit, few enough requests
 
 
@@ -68,11 +73,12 @@ def main() -> int:
     lock = json.loads(LOCK.read_text())
     weights = ROOT / lock["file"]
     needed = [weights, ENGINE / "gpt2_web.mjs", ENGINE / "gpt2_web.wasm",
+              ENGINE_MT / "gpt2_web.mjs", ENGINE_MT / "gpt2_web.wasm",
               TOKENIZER / "vocab.json", TOKENIZER / "merges.txt"]
     for path in needed:
         if not path.is_file():
             return fail(f"missing {path.relative_to(ROOT)} -- run ./demo.sh, or "
-                        "web/build.sh wasm_simd128 and scripts/quantize_weights.py "
+                        "web/build.sh wasm_simd128 (and again with mt) and scripts/quantize_weights.py "
                         "--wte-outliers 8")
 
     size = weights.stat().st_size
@@ -87,12 +93,14 @@ def main() -> int:
     if out.exists():
         shutil.rmtree(out)
     (out / "wasm").mkdir(parents=True)
+    (out / "wasm-mt").mkdir()
     (out / "model").mkdir()
 
     for name in PAGE_FILES:
         shutil.copy2(WEB / name, out / name)
     for name in ["gpt2_web.mjs", "gpt2_web.wasm"]:
         shutil.copy2(ENGINE / name, out / "wasm" / name)
+        shutil.copy2(ENGINE_MT / name, out / "wasm-mt" / name)
     for name in ["vocab.json", "merges.txt"]:
         shutil.copy2(TOKENIZER / name, out / "model" / name)
     # GitHub Pages runs Jekyll unless told not to, which skips some files.

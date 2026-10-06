@@ -7,6 +7,8 @@
 //
 //   load      it downloads the parts, checks the sha256, and says Ready with
 //             the verified checksum on screen
+//   threads   with no COOP/COEP from the server, as on GitHub Pages, the
+//             service worker isolates the page and the threaded engine loads
 //   greedy    50 greedy tokens on "The capital of France is" put on screen
 //             exactly the text gpt2_generate.js's ids decode to
 //   stop      Stop ends a long sampling run
@@ -162,9 +164,19 @@ async function browser() {
   await send("Runtime.enable");
   await send("Log.enable");
   await send("Page.enable");
-  const js = async (expr) => (await send("Runtime.evaluate",
-    { expression: expr, returnByValue: true, awaitPromise: true })).result.value;
-  const statusText = () => js(`document.getElementById("status-msg").textContent`);
+  // An evaluate sent while the page is navigating can go unanswered -- and the
+  // page now reloads itself once, on a first visit, to become cross-origin
+  // isolated (isolate() in index.html). So every evaluate has a deadline, and
+  // one that misses it reads as undefined: the waits below just ask again.
+  const js = async (expr, seconds = 30) => {
+    const reply = await Promise.race([
+      send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true }),
+      sleep(seconds * 1000).then(() => undefined),
+    ]);
+    return reply?.result?.value;
+  };
+  const statusText = async () =>
+    (await js(`document.getElementById("status-msg")?.textContent`, 5)) ?? "";
   const waitStatus = async (re, seconds) => {
     for (let i = 0; i < seconds * 4; ++i) {
       const s = await statusText();
@@ -208,6 +220,13 @@ console.log(`site ${URL_}, weights ${manifest.policy} sha256 ${manifest.sha256.s
   check(/^Ready/.test(ready), `load: ${ready}`);
   const verified = await b.js(`document.getElementById("verified").title`);
   check(verified === manifest.sha256, "load: the verified sha256 on screen is the manifest's");
+  // This server sends no COOP/COEP, as GitHub Pages sends none: isolation, and
+  // so threads, has to come from coi-sw.js. Every check after this one runs on
+  // the threaded engine, and the greedy one holds it to gpt2_generate.
+  const isolated = await b.js("self.crossOriginIsolated");
+  const engineLine = await b.js(`document.getElementById("s-engine").textContent`);
+  check(isolated === true && /\b([2-9]|\d\d+) threads\b/.test(engineLine ?? ""),
+        `threads: isolated by the service worker, running ${engineLine}`);
 
   await b.js(`(() => {
     document.getElementById("prompt").value = "The capital of France is";

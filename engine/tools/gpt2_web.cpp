@@ -10,6 +10,8 @@
 //                        never held twice.
 //   gpt2_load()          parse those bytes (Weights::from_blob) and build the
 //                        model and a full-context KV cache.
+//   gpt2_set_threads(n)  use up to n threads, in a build with pthreads;
+//                        returns the count in force, 1 in a build without.
 //   gpt2_reset()         forget the sequence; the next forward starts at 0.
 //   gpt2_forward(p, n)   append n token ids through the cache and return the
 //                        last position's logits, vocab_size floats. That row
@@ -34,6 +36,7 @@
 #include "gpt2/backend/backend.h"
 #include "gpt2/kv_cache.h"
 #include "gpt2/model.h"
+#include "gpt2/threading.h"
 #include "gpt2/weights.h"
 
 namespace {
@@ -85,6 +88,24 @@ EMSCRIPTEN_KEEPALIVE const char* gpt2_policy() {
   return g_weights ? g_weights->policy().c_str() : "";
 }
 EMSCRIPTEN_KEEPALIVE const char* gpt2_backend() { return gpt2::backend::name(); }
+
+// Threads for every forward from here on. The count is not a numerical
+// parameter -- the pool splits only disjoint outputs -- so the page may pick
+// whatever the machine offers. Without pthreads (a page that is not
+// cross-origin isolated loads that build) there is one thread and this says so.
+EMSCRIPTEN_KEEPALIVE int gpt2_set_threads(int n) {
+#if defined(__EMSCRIPTEN_PTHREADS__) && defined(GPT2_WASM_MAX_THREADS)
+  try {
+    gpt2::threads::set_count(std::min(std::max(n, 1), GPT2_WASM_MAX_THREADS));
+  } catch (const std::exception& e) {
+    g_error = std::string("cannot start threads: ") + e.what();
+    gpt2::threads::set_count(1);
+  }
+#else
+  (void)n;
+#endif
+  return gpt2::threads::count();
+}
 
 // Positions the cache holds: the index the next token will take.
 EMSCRIPTEN_KEEPALIVE int gpt2_position() { return g_cache ? g_cache->size() : 0; }
