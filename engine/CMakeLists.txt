@@ -13,7 +13,17 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Determinism beats speed until Phase 3: no fast-math, no reassociation.
-add_compile_options(-Wall -Wextra -fno-fast-math)
+#
+# And no contraction, anywhere. A fused multiply-add rounds once where the
+# source rounds twice, so a compiler that fuses `acc += a * b` behind our back
+# changes the numbers. GCC in ISO mode (CMAKE_CXX_EXTENSIONS OFF) already
+# refuses to; clang does not -- its default is -ffp-contract=on, and on arm64,
+# where fmadd is baseline, Apple clang fused 30 multiply-adds in
+# backend_scalar.cpp alone, and the native build left wasm scalar at the first
+# matmul (block.0.attn.qkv) instead of at the first tanh. The flag used to sit
+# only on the SIMD backends' files; the scalar backend and ops.cpp need it as
+# much. GPT2_NUMERICS=fast, below, is the one place it is lifted.
+add_compile_options(-Wall -Wextra -fno-fast-math -ffp-contract=off)
 
 # Which SIMD backend to build. Exactly one backend_*.cpp is compiled -- they
 # define the same symbols -- and the kernels never name the choice, they just
