@@ -79,13 +79,17 @@ jobs:
           .venv/bin/python reference/dump.py
           .venv/bin/python scripts/export_runs.py
 
-      - name: Build -- the wasm engine, threaded and not, and native for the eval
+      - name: Build -- the wasm engine, threaded and not; native scalar, AVX2, AVX2 fast
         run: |
           emcc --version | head -1
           web/build.sh wasm_simd128
           web/build.sh wasm_simd128 mt
+          cmake -S engine -B engine/build -G Ninja
+          cmake --build engine/build
           cmake -S engine -B engine/build-avx2 -G Ninja -DGPT2_BACKEND=avx2
           cmake --build engine/build-avx2
+          cmake -S engine -B engine/build-avx2-fast -G Ninja -DGPT2_BACKEND=avx2 -DGPT2_NUMERICS=fast
+          cmake --build engine/build-avx2-fast
 
       # The oracle now holds a run that fills the 1024-position context. Its
       # whole-sequence comparison is reported, and its KV-cached row 1023 is
@@ -117,6 +121,27 @@ jobs:
           node web/build/engine-wasm_simd128-mt/tools/gpt2_dump.js --threads 4 --kv-cache --out web/build/dumps-mt-kv
           .venv/bin/python oracle/identical.py web/build/dumps-kv web/build/dumps-mt-kv --verify
           rm -rf web/build/dumps web/build/dumps-mt
+
+      # The native engine on the hardware it was built for. The runners have
+      # AVX2 and FMA, so this is where the AVX2 backend is held to the oracle on
+      # every push -- the machine this was developed on latterly could not run
+      # it -- and to the scalar backend bit for bit, the property the backend
+      # layer exists for. The fast tier is held to the tolerance, not to bits.
+      - name: Gate -- native AVX2 against the oracle, and bit-identical to scalar
+        run: |
+          grep -qw avx2 /proc/cpuinfo && grep -qw fma /proc/cpuinfo
+          ctest --test-dir engine/build-avx2 --output-on-failure
+          for mode in "" "--kv-cache"; do
+            engine/build-avx2/tools/gpt2_dump --quiet --threads 4 $mode --out engine/dumps-avx2
+            .venv/bin/python oracle/compare.py engine/dumps-avx2/manifest.json
+            engine/build/tools/gpt2_dump --quiet --threads 4 $mode --out engine/dumps-scalar
+            .venv/bin/python oracle/identical.py engine/dumps-scalar engine/dumps-avx2 --verify
+            engine/build-avx2-fast/tools/gpt2_dump --quiet --threads 4 $mode --out engine/dumps-fast
+            .venv/bin/python oracle/compare.py engine/dumps-fast/manifest.json
+            rm -rf engine/dumps-avx2 engine/dumps-scalar engine/dumps-fast
+          done
+          .venv/bin/python oracle/check_greedy.py --kv-cache \
+            --engine engine/build-avx2/tools/gpt2_generate
 
       - name: Gate -- tokenizer and web module
         run: |
