@@ -238,14 +238,140 @@ server now cuts a part off halfway: once, which must be retried, and on every
 request, which must fail with a reason. Run against the worker that shipped,
 both cases fail with the live symptom; against the fix, both pass.
 
+## 12. "No FMA" was a rule the build only enforced on x86
+
+The numerics contract has always said no fused multiply-add: `acc += a * b`
+rounds twice in the scalar backend, and every SIMD backend must round the same
+way. `-ffp-contract=off` sat on the AVX2 and wasm backend files, and that was
+enough on the machine the engine was built on -- GCC in ISO mode does not
+contract, and x86-64 without `-mfma` has nothing to contract into.
+
+Built on an Apple M4 with Apple clang, it was not enough. Clang's default is
+`-ffp-contract=on`, arm64 has `fmadd` as baseline, and `backend_scalar.cpp`
+compiled to 30 fused multiply-adds. The engine still passed the oracle, which
+is the problem: tolerance cannot see this. Bit-identity can -- the native
+build parted from the wasm scalar build at `block.0.attn.qkv`, the first
+matmul, where on x86 the two part at the first `tanh`. With the flag global,
+the arm64 build parts from wasm at `block.0.attn.probs`, the first `exp`: the
+libm boundary of finding 7, and nothing earlier. On x86 GCC the change is a
+no-op.
+
+The contract now lives where the build can enforce it everywhere, and
+`GPT2_NUMERICS=fast` (finding 16) is the one place it is lifted on purpose.
+
+## 13. At 1024 positions, no fp32 implementation meets the fp32 rule
+
+The oracle's longest prompt was 90 tokens, the eval's windows stop at 512, and
+the demo runs to 1024. A sixth oracle run, `context`, fills the window with the
+first 1024 ids of the pinned eval corpus. The engine failed it on 8 tensors,
+`logits` at 857% of budget -- and passed the KV-cached check of position 1023
+at 39%.
+
+Against the same model run in float64, on every failing tensor the engine was
+the closer of the two to the exact answer, by 1.3x to 4x, and its own q.k
+arithmetic was 3x more accurate than PyTorch's. The first miss was a score of
+-0.04 produced by terms summing to 148, a 3,700x cancellation that turns
+`qkv`'s in-tolerance difference into an out-of-tolerance one. And against
+float64, neither implementation meets the rule at this length: PyTorch fp32
+misses on 8 tensors (worst 1237%), the engine on 4 (worst 971%) -- 5, 2 and 3
+elements out of 786,432 in three of them, and 0.016% of logits, every one a
+value near zero made by cancellation. Finding 1 again, at long context.
+
+The obvious fix -- pass a tensor that sits no farther from float64 than
+PyTorch fp32 does -- was built and is not sound. The engine was closer on 15 of
+the 16 tensors near the limit and lost `ln_f.out` by 20%: its own LayerNorm
+arithmetic was at 1.5% of budget, the loss inherited entirely from where
+rounding happened to fall upstream, where LayerNorm's mean subtraction turns a
+-5.5 into a -0.35 and keeps the absolute error. Two independent roundings,
+compared 123 times, will lose one by chance. Passing it would have meant a
+hand-picked factor.
+
+So the `context` run's reference is the float64 forward, and what gates is its
+KV-cached row 1023, under the rule unchanged: that row attends over the keys
+and values of every earlier position, so their errors reach it. The
+whole-sequence comparison runs and is reported, with PyTorch fp32's own figure
+beside each miss, but does not gate. The five original runs are untouched.
+
+## 14. Most of a prefill was arithmetic nothing read
+
+Two things `Model::forward` computed and threw away. Logits for every position,
+when generation reads only the last: lm_head is 31% of a 128-token prefill.
+And attention over masked positions -- scores for keys a query may not see,
+then `dst += 0 * v` for each of them, half of a prefill's probs @ v.
+
+`Logits::Last` computes only the final row. Each logit is still one dot
+product over the same span, so the row is the same bits; the dump tool's
+`--last-logits` proves it against the oracle, with the record naming the row
+it holds so `compare.py` slices the reference there, and three self-tests
+showing a missing or wrong row is caught. The upper triangle of the scores is
+now computed only when tapped -- the oracle dumps keep their checksums -- and
+the weighted sum stops at the last visible key. Attention also runs threaded,
+one item per head and query, each writing only its own row.
+
+Every one of these is bit-identical to the engine before it: all 738 tensors,
+native and both wasm backends, whole-sequence and KV-cached, at 1, 3 and 8
+threads, and 50 generated tokens on three prompts. On an Apple M4 Max -- on
+battery, so as a ratio only, measured back to back:
+
+    prefill, T=128, native scalar     1 thread   1768 ->  648 ms    2.7x
+                                      8 threads   310 ->  126 ms    2.5x
+
+## 15. Threads sped up prefill and did nothing for decode
+
+The wasm build now has threads -- a second build with pthreads, loaded when
+the page is cross-origin isolated, which on GitHub Pages a small service
+worker arranges (`web/coi-sw.js`). It is bit-identical to the single-threaded
+build at 1 and 8 threads, in Node and on the page, which shows exactly
+`gpt2_generate`'s 50 tokens at 8 threads. Under Node on the M4 Max:
+
+| wasm_simd128 | Prefill | Decode / token | Tokens / s |
+|---|---:|---:|---:|
+| single-threaded build | 843 ms | 10.4 ms | 59.3 |
+| threaded build, 1 thread | 885 ms | 11.3 ms | 55.3 |
+| threaded build, 8 threads | 165 ms | 11.7 ms | 77.9 |
+
+Prefill scales 5.4x. Decode does not move, here or natively, where 8 threads
+decode at 17.6 ms against 16.2 at one. A decode step is one row, so its ~70
+`parallel_for` calls are each a few microseconds of work behind a wake-up and
+a join of the same order. A pool that spins rather than sleeps between calls
+is the next thing to try.
+
+The page met one surprise on the way: WebCrypto refuses to hash shared memory,
+and the threaded build's memory is a SharedArrayBuffer, so the sha256 check of
+the weights threw. The threaded page copies the file out once to hash it.
+
+## 16. Fused multiply-add bought little where it could be measured
+
+`GPT2_NUMERICS=fast` lifts finding 12's rule on purpose: FMA in the AVX2
+backend, relaxed-SIMD madd in wasm, compiler contraction in scalar. A fast
+build names itself `<backend>-fast` everywhere a backend is recorded and is
+judged by tolerance and `eval/metrics.py` rather than bit-identity. It changes
+720 of 738 tensors, passes the oracle, and against the exact fp32 engine on the
+eval slice scores perplexity x1.00000, top-1 100.000%, KL 0.000000, natively
+and in wasm.
+
+And it is barely faster. On the M4 Max, prefill 654 -> 637 ms native and
+853 -> 803 ms in wasm; decode, which streams weights, unchanged. The case it
+was built for is AVX2, where the FMA path has 37 fused instructions against 0
+in the exact build. This round of work was on arm64, which cannot run it; CI
+can, and holds it to the oracle on every push -- it passes, whole-sequence and
+KV-cached. How much faster it is there is still unmeasured: a shared CI runner
+is no place to time anything.
+
 ## Known limits
 
-- `Model::forward` computes logits for every position; prefill needs only the
-  last row, and lm_head is 31% of prefill's arithmetic. Narrowing it changes
-  the contract the oracle dumps are written against.
-- The wasm build has no threads. They need `SharedArrayBuffer`, so COOP/COEP
-  headers on whatever serves the page; native reaches 42.8 tok/s at 8 threads
-  against 23.96 at one.
+- The 1024-position oracle run gates only its last position; its
+  whole-sequence comparison is reported, because no fp32 implementation meets
+  the rule there (finding 13).
+- Threads do not speed up decode, native or wasm (finding 15).
+- The AVX2 backend since findings 12-16 has been validated in CI only --
+  against the oracle, bit-identical to native scalar, 50/50 greedy -- not on
+  the machine its benchmarks came from, so `bench/results/` has no AVX2 figure
+  for these changes, and the fast tier's AVX2 speed is unmeasured.
+- The page test exercises the threaded path; the fallback for a browser that
+  refuses isolation is the single-threaded module `test_web.mjs` covers, not a
+  page-level check.
+- There is no NEON backend: arm64 runs the scalar one natively.
 - wasm and native differ in the last bits (finding 7); both pass the oracle.
 - KL and decisive disagreement are computed on a strided sample, not every
   position. Full logits for the slice would be 800 MB.

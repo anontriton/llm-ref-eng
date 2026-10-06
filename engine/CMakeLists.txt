@@ -13,7 +13,37 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Determinism beats speed until Phase 3: no fast-math, no reassociation.
-add_compile_options(-Wall -Wextra -fno-fast-math)
+#
+# And no contraction, anywhere. A fused multiply-add rounds once where the
+# source rounds twice, so a compiler that fuses `acc += a * b` behind our back
+# changes the numbers. GCC in ISO mode (CMAKE_CXX_EXTENSIONS OFF) already
+# refuses to; clang does not -- its default is -ffp-contract=on, and on arm64,
+# where fmadd is baseline, Apple clang fused 30 multiply-adds in
+# backend_scalar.cpp alone, and the native build left wasm scalar at the first
+# matmul (block.0.attn.qkv) instead of at the first tanh. The flag used to sit
+# only on the SIMD backends' files; the scalar backend and ops.cpp need it as
+# much. GPT2_NUMERICS=fast, below, is the one place it is lifted.
+add_compile_options(-Wall -Wextra -fno-fast-math -ffp-contract=off)
+
+# Numerics tier. "exact" is everything above: no contraction, every backend
+# bit-identical to scalar, the oracle's comparison meaningful across all of
+# them. "fast" lifts that for the one instruction it costs -- fused
+# multiply-add (FMA on AVX2, relaxed-SIMD madd on wasm, compiler contraction on
+# scalar where the target has it) -- and gives up bit-identity with it. A fast
+# build names itself "<backend>-fast" everywhere a backend is recorded, and is
+# held to the oracle's tolerance and to eval/metrics.py against the exact fp32
+# engine instead.
+set(GPT2_NUMERICS "exact" CACHE STRING "Numerics tier: exact or fast")
+set_property(CACHE GPT2_NUMERICS PROPERTY STRINGS exact fast)
+if(GPT2_NUMERICS STREQUAL "fast")
+  add_compile_options(-ffp-contract=fast)
+  add_compile_definitions(GPT2_FAST_NUMERICS=1)
+  set(GPT2_CONTRACT "-ffp-contract=fast")
+elseif(GPT2_NUMERICS STREQUAL "exact")
+  set(GPT2_CONTRACT "-ffp-contract=off")
+else()
+  message(FATAL_ERROR "GPT2_NUMERICS=${GPT2_NUMERICS}: expected exact or fast")
+endif()
 
 # Which SIMD backend to build. Exactly one backend_*.cpp is compiled -- they
 # define the same symbols -- and the kernels never name the choice, they just
@@ -36,24 +66,34 @@ list(APPEND GPT2_SOURCES "${GPT2_BACKEND_SOURCE}")
 # -mavx2 without -mfma, plus -ffp-contract=off: a fused multiply-add rounds
 # once where the scalar backend rounds twice, so allowing it -- whether written
 # as an intrinsic or contracted by the compiler -- would make the two backends
-# disagree in the last bits. They are required to agree.
+# disagree in the last bits. They are required to agree -- in the exact tier.
+# The fast tier adds -mfma and fuses on purpose.
 if(GPT2_BACKEND STREQUAL "avx2")
+  set(GPT2_AVX2_FLAGS "-mavx2;${GPT2_CONTRACT}")
+  if(GPT2_NUMERICS STREQUAL "fast")
+    list(APPEND GPT2_AVX2_FLAGS "-mfma")
+  endif()
   set_source_files_properties("${GPT2_BACKEND_SOURCE}" PROPERTIES
-    COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
+    COMPILE_OPTIONS "${GPT2_AVX2_FLAGS}")
 endif()
 
 # wasm_simd128 has no FMA to contract into, but the flag says why the backend
 # agrees with scalar instead of leaving it to the instruction set. No
-# -mrelaxed-simd: its fused multiply-add rounds however the host likes.
+# -mrelaxed-simd in the exact tier: its fused multiply-add rounds however the
+# host likes. The fast tier takes it for exactly that instruction.
 if(GPT2_BACKEND STREQUAL "wasm_simd128")
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "GPT2_BACKEND=wasm_simd128 needs an Emscripten build: web/build.sh wasm_simd128")
   endif()
+  set(GPT2_WASM_FLAGS "-msimd128;${GPT2_CONTRACT}")
+  if(GPT2_NUMERICS STREQUAL "fast")
+    list(APPEND GPT2_WASM_FLAGS "-mrelaxed-simd")
+  endif()
   set_source_files_properties("${GPT2_BACKEND_SOURCE}" PROPERTIES
-    COMPILE_OPTIONS "-msimd128;-ffp-contract=off")
+    COMPILE_OPTIONS "${GPT2_WASM_FLAGS}")
 endif()
 
-message(STATUS "gpt2: backend ${GPT2_BACKEND}")
+message(STATUS "gpt2: backend ${GPT2_BACKEND}, numerics ${GPT2_NUMERICS}")
 
 # Phase 5: the same sources under Emscripten, configured with emcmake (see
 # web/build.sh). Every tool becomes a .js + .wasm pair run by Node, which the
@@ -69,8 +109,9 @@ message(STATUS "gpt2: backend ${GPT2_BACKEND}")
 # - Exceptions: Emscripten turns catching off by default, and every tool
 #   reports failure through a catch in main. Native wasm exceptions, not the
 #   JS-emulated kind, which wraps every call that might throw.
-# - No -pthread yet. The pool is never built at --threads 1; asking for more
-#   fails at the first std::thread, loudly.
+# - Threads only with GPT2_WASM_THREADS=ON, below. Without it the pool is never
+#   built at --threads 1, and asking for more fails at the first std::thread,
+#   loudly.
 if(EMSCRIPTEN)
   add_compile_options(-fwasm-exceptions)
   add_link_options(
@@ -79,6 +120,28 @@ if(EMSCRIPTEN)
     -sMAXIMUM_MEMORY=4GB
     -sSTACK_SIZE=1MB)
   set(GPT2_NODE_LINK_OPTIONS -sNODERAWFS=1 -sEXIT_RUNTIME=1)
+endif()
+
+# wasm threads: std::thread over Web Workers and a SharedArrayBuffer, which a
+# browser grants only to a cross-origin-isolated page (web/coi-sw.js arranges
+# that on GitHub Pages). Everything is compiled with -pthread -- atomics and
+# shared memory are a property of the whole module, not of one file.
+#
+# The workers are created when the module loads, not when the pool asks: a
+# browser starts a Worker only once the creating thread returns to its event
+# loop, and threads::set_count() blocks without returning. So
+# GPT2_WASM_POOL_THREADS workers are made up front -- the most --threads can
+# ask for is one more, the calling thread -- and STRICT=2 makes asking for
+# more than that an error rather than a hang.
+option(GPT2_WASM_THREADS "wasm: build with pthreads" OFF)
+set(GPT2_WASM_POOL_THREADS 7 CACHE STRING "wasm: workers created at load")
+if(EMSCRIPTEN AND GPT2_WASM_THREADS)
+  add_compile_options(-pthread)
+  add_link_options(
+    -pthread
+    -sPTHREAD_POOL_SIZE=${GPT2_WASM_POOL_THREADS}
+    -sPTHREAD_POOL_SIZE_STRICT=2)
+  add_compile_definitions(GPT2_WASM_MAX_THREADS=${GPT2_WASM_POOL_THREADS}+1)
 endif()
 
 find_package(Threads REQUIRED)

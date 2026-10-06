@@ -45,14 +45,25 @@ oracle validation. In practice that is:
         --engine engine/build-avx2/tools/gpt2_generate
     .venv/bin/python oracle/test_compare.py
 
+A change that claims not to move a number -- an optimization, a refactor, a
+thread count -- is held to the engine before it, bit for bit, not to the
+tolerance. Dump the commit before and after the change and compare the two:
+
+    .venv/bin/python oracle/identical.py engine/dumps-before engine/dumps --verify
+
 If the change touches anything the wasm build compiles -- which is all of
 `engine/src` -- run the same proof there. The wasm_simd128 build must stay
 bit-identical to the wasm scalar build, not merely within tolerance:
 
-    web/build.sh scalar && web/build.sh wasm_simd128
+    web/build.sh scalar && web/build.sh wasm_simd128 && web/build.sh wasm_simd128 mt
     ctest --test-dir web/build/engine-scalar && ctest --test-dir web/build/engine-wasm_simd128
+    ctest --test-dir web/build/engine-wasm_simd128-mt
     node web/build/engine-wasm_simd128/tools/gpt2_dump.js --out web/build/dumps
     .venv/bin/python oracle/compare.py web/build/dumps/manifest.json
+    node web/build/engine-wasm_simd128/tools/gpt2_dump.js --kv-cache --out web/build/dumps-kv
+    .venv/bin/python oracle/compare.py web/build/dumps-kv/manifest.json
+    node web/build/engine-wasm_simd128-mt/tools/gpt2_dump.js --threads 4 --out web/build/dumps-mt
+    .venv/bin/python oracle/identical.py web/build/dumps web/build/dumps-mt
     .venv/bin/python oracle/check_greedy.py --kv-cache \
         --engine web/build/engine-wasm_simd128/tools/gpt2_generate.js
     node web/test_web.mjs
@@ -62,9 +73,27 @@ bit-identical to the wasm scalar build, not merely within tolerance:
 Every push to `main` runs this gate again in GitHub Actions
 (`.github/workflows/pages.yml`) -- on a clean runner, from the checkpoint up --
 and publishes the demo only if all of it passes; pull requests run it and
-publish nothing. CI regenerates the PyTorch reference on its own CPU and torch
+publish nothing. That includes the native AVX2 proof above -- oracle,
+bit-identity to native scalar, greedy -- and the fast tier's AVX2 build
+against the oracle, so on a machine without AVX2 (an arm64 Mac) run the rest
+locally and open a pull request for that part. CI regenerates the PyTorch reference on its own CPU and torch
 version, so its oracle budget figure is its own -- 40.8% at the first deploy --
 and not comparable to the 52.0% and 58.1% measured here.
+
+The oracle's `context` run fills the 1024-position window and is the big one:
+about 2 GB of the oracle's 2.1, and as much again per whole-sequence engine
+dump. Its reference is float64, its whole-sequence comparison is reported
+rather than gated -- `REPORT` lines, with PyTorch fp32's own figure beside each
+-- and its KV-cached dump gates, so the KV-cached run above is required, not
+optional ([findings](findings.md), 13).
+
+The numerics tier is a build option, `-DGPT2_NUMERICS=fast` natively or
+`web/build.sh wasm_simd128 fast`. A fast build is not bit-identical to
+anything, so it is held to the oracle's tolerance and to the eval against the
+exact fp32 engine instead:
+
+    .venv/bin/python eval/run.py --out eval/runs/fp32-fast \
+        --tool engine/build-fast/tools/gpt2_eval --reference eval/runs/fp32
 
 Watch the budget percentage `compare.py` prints, not just the pass. It has been
 52.0% natively since Phase 2 and stayed there through four optimizations, and
@@ -124,9 +153,13 @@ From the repo root, with the `.venv` described in CLAUDE.md:
 
     # Phase 5: the wasm build, the browser's weights, the tokenizer, the demo.
     export PATH="$PATH:/usr/lib/emscripten"                # Arch keeps emcc here
+                                                           # (Homebrew's is on PATH)
     web/build.sh scalar && web/build.sh wasm_simd128
+    web/build.sh wasm_simd128 mt                           # threads, for isolated pages
     node web/build/engine-wasm_simd128/tools/gpt2_dump.js --out web/build/dumps
     .venv/bin/python oracle/compare.py web/build/dumps/manifest.json
+    node web/build/engine-wasm_simd128/tools/gpt2_dump.js --kv-cache --out web/build/dumps-kv
+    .venv/bin/python oracle/compare.py web/build/dumps-kv/manifest.json
     .venv/bin/python scripts/quantize_weights.py --wte-outliers 8
     .venv/bin/python eval/run.py --out eval/runs/int8-wte-o8 \
         --weights weights/gpt2-124m-int8-wte-o8.bin --reference eval/runs/fp32

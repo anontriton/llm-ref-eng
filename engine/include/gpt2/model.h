@@ -25,6 +25,17 @@ namespace gpt2 {
 using Tap = std::function<void(const std::string& name, const float* data,
                                const std::vector<int64_t>& shape)>;
 
+// Which rows of logits a forward pass computes.
+//
+// All is the contract the oracle was written against: one row per input
+// position, [T, vocab_size]. Last computes only the final row, [1, vocab_size]
+// -- the only one generation reads. lm_head is a 768 x 50257 matmul per row,
+// 31% of a 128-token prefill's arithmetic, and All spends it on rows nothing
+// looks at. Every other tensor is computed exactly as under All, and so is the
+// last row of logits: each logit is one dot product over the same span either
+// way, so it is the same bits. The tap reports it as [1, 1, vocab_size].
+enum class Logits { All, Last };
+
 class Model {
  public:
   explicit Model(const Weights& weights);
@@ -40,7 +51,8 @@ class Model {
   // validated in Phase 2 and it stays the definition of a correct forward
   // pass.
   std::vector<float> forward(const std::vector<int32_t>& input_ids,
-                             const Tap& tap = nullptr) const;
+                             const Tap& tap = nullptr,
+                             Logits logits = Logits::All) const;
 
   // Incremental: appends `new_ids` after whatever `cache` already holds, and
   // returns logits for the new positions only -- [new_ids.size(), vocab_size].
@@ -52,17 +64,22 @@ class Model {
   // passes that must agree forever is exactly the arrangement that rots, and
   // the oracle only ever validates one of them.
   std::vector<float> forward(const std::vector<int32_t>& new_ids,
-                             KVCache& cache, const Tap& tap = nullptr) const;
+                             KVCache& cache, const Tap& tap = nullptr,
+                             Logits logits = Logits::All) const;
 
  private:
+  // Scratch buffers for one forward pass, sized once and shared by every
+  // block, rather than allocated afresh in each of the twelve.
+  struct Workspace;
+
   // `start_pos` is the absolute position of the first row of `new_ids`; the
   // cache supplies every position below it.
   std::vector<float> forward_impl(const std::vector<int32_t>& new_ids,
                                   int start_pos, KVCache& cache,
-                                  const Tap& tap) const;
+                                  const Tap& tap, Logits logits) const;
 
   void block(int i, float* x, int start_pos, int T_new, KVCache& cache,
-             const Tap& tap) const;
+             Workspace& ws, const Tap& tap) const;
 
   const Weights& w_;
   Config cfg_;

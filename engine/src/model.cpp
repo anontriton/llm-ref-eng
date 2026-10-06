@@ -1,26 +1,41 @@
 #include "gpt2/model.h"
 
+#include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 
 #include "gpt2/backend/backend.h"
 #include "gpt2/ops.h"
+#include "gpt2/threading.h"
 
 namespace gpt2 {
 namespace {
 
-void emit(const Tap& tap, const std::string& name, const float* data,
-          std::vector<int64_t> shape) {
-  if (tap) tap(name, data, std::move(shape));
+// The name and shape are built only when something is listening. Decode runs
+// untapped, and spelling out a dozen names and shape vectors per block, per
+// token, only to drop them was most of its allocations.
+void emit(const Tap& tap, const std::string& prefix, const char* suffix,
+          const float* data, std::initializer_list<int64_t> shape) {
+  if (tap) tap(prefix + suffix, data, std::vector<int64_t>(shape));
 }
 
 }  // namespace
 
+struct Model::Workspace {
+  std::vector<float> normed;   // [T_new, C], ln_1 then ln_2
+  std::vector<float> qkv;      // [T_new, 3C]
+  std::vector<float> scores;   // [H, T_new, total], scores then probs
+  std::vector<float> merged;   // [T_new, C], heads merged back
+  std::vector<float> proj;     // [T_new, C], attn.out then mlp.out
+  std::vector<float> hidden;   // [T_new, d_ff]
+};
+
 Model::Model(const Weights& weights) : w_(weights), cfg_(weights.config()) {}
 
 std::vector<float> Model::forward(const std::vector<int32_t>& input_ids,
-                                  const Tap& tap) const {
+                                  const Tap& tap, Logits logits) const {
   const int T = static_cast<int>(input_ids.size());
   if (T == 0) throw std::runtime_error("forward: empty input");
   if (T > cfg_.n_ctx) {
@@ -33,17 +48,18 @@ std::vector<float> Model::forward(const std::vector<int32_t>& input_ids,
   // below runs through the same path the incremental form uses, which is what
   // keeps the two from drifting.
   KVCache scratch(cfg_, T);
-  return forward_impl(input_ids, 0, scratch, tap);
+  return forward_impl(input_ids, 0, scratch, tap, logits);
 }
 
 std::vector<float> Model::forward(const std::vector<int32_t>& new_ids,
-                                  KVCache& cache, const Tap& tap) const {
-  return forward_impl(new_ids, cache.size(), cache, tap);
+                                  KVCache& cache, const Tap& tap,
+                                  Logits logits) const {
+  return forward_impl(new_ids, cache.size(), cache, tap, logits);
 }
 
 std::vector<float> Model::forward_impl(const std::vector<int32_t>& new_ids,
                                        int start_pos, KVCache& cache,
-                                       const Tap& tap) const {
+                                       const Tap& tap, Logits which) const {
   const int T_new = static_cast<int>(new_ids.size());
   const int C = cfg_.d_model;
   const int total = start_pos + T_new;
@@ -79,28 +95,40 @@ std::vector<float> Model::forward_impl(const std::vector<int32_t>& new_ids,
     w_.embed(id, dst);
     for (int i = 0; i < C; ++i) dst[i] += pos[i];
   }
-  emit(tap, "embed.out", x.data(), {1, T_new, C});
+  emit(tap, "", "embed.out", x.data(), {1, T_new, C});
+
+  const size_t TC = static_cast<size_t>(T_new) * C;
+  Workspace ws;
+  ws.normed.resize(TC);
+  ws.qkv.resize(3 * TC);
+  ws.scores.resize(static_cast<size_t>(cfg_.n_head) * T_new * total);
+  ws.merged.resize(TC);
+  ws.proj.resize(TC);
+  ws.hidden.resize(static_cast<size_t>(T_new) * cfg_.d_ff);
 
   for (int i = 0; i < cfg_.n_layer; ++i) {
-    block(i, x.data(), start_pos, T_new, cache, tap);
+    block(i, x.data(), start_pos, T_new, cache, ws, tap);
   }
 
   // Final layer norm, written in place: nothing downstream needs the input.
   ops::layernorm(x.data(), w_.ln_f_w(), w_.ln_f_b(), x.data(), T_new, C,
                  static_cast<float>(cfg_.layer_norm_eps));
-  emit(tap, "ln_f.out", x.data(), {1, T_new, C});
+  emit(tap, "", "ln_f.out", x.data(), {1, T_new, C});
 
-  // lm_head is tied to wte -- there is no separate output matrix.
-  std::vector<float> logits(static_cast<size_t>(T_new) * cfg_.vocab_size);
-  ops::linear_tied(x.data(), w_.wte(), logits.data(), T_new, C,
-                   cfg_.vocab_size);
-  emit(tap, "logits", logits.data(), {1, T_new, cfg_.vocab_size});
+  // lm_head is tied to wte -- there is no separate output matrix. Under
+  // Logits::Last only the final row goes through it; each logit is still the
+  // one dot product it always was, so that row is the same bits either way.
+  const int rows = which == Logits::Last ? 1 : T_new;
+  const float* xin = x.data() + static_cast<size_t>(T_new - rows) * C;
+  std::vector<float> logits(static_cast<size_t>(rows) * cfg_.vocab_size);
+  ops::linear_tied(xin, w_.wte(), logits.data(), rows, C, cfg_.vocab_size);
+  emit(tap, "", "logits", logits.data(), {1, rows, cfg_.vocab_size});
 
   return logits;
 }
 
 void Model::block(int i, float* x, int start_pos, int T_new, KVCache& cache,
-                  const Tap& tap) const {
+                  Workspace& ws, const Tap& tap) const {
   const LayerWeights& L = w_.layer(i);
   const int C = cfg_.d_model;
   const int H = cfg_.n_head;
@@ -111,21 +139,21 @@ void Model::block(int i, float* x, int start_pos, int T_new, KVCache& cache,
   const size_t TC = static_cast<size_t>(T_new) * C;
 
   // ---- attention ----------------------------------------------------------
-  std::vector<float> normed(TC);
-  ops::layernorm(x, L.ln_1_w, L.ln_1_b, normed.data(), T_new, C, static_cast<float>(cfg_.layer_norm_eps));
-  emit(tap, p + ".ln_1.out", normed.data(), {1, T_new, C});
+  float* normed = ws.normed.data();
+  ops::layernorm(x, L.ln_1_w, L.ln_1_b, normed, T_new, C, static_cast<float>(cfg_.layer_norm_eps));
+  emit(tap, p, ".ln_1.out", normed, {1, T_new, C});
 
   // Fused QKV: 768 -> 2304. Row t holds q, k, v back to back, each C wide, so a
   // single head's slice is contiguous and every dot product below is too.
   // Computed for the new rows only; earlier rows are already in the cache.
-  std::vector<float> qkv(static_cast<size_t>(T_new) * 3 * C);
-  ops::linear(normed.data(), L.c_attn_w, L.c_attn_b, qkv.data(), T_new, C, 3 * C);
-  emit(tap, p + ".attn.qkv", qkv.data(), {1, T_new, 3 * C});
+  float* qkv = ws.qkv.data();
+  ops::linear(normed, L.c_attn_w, L.c_attn_b, qkv, T_new, C, 3 * C);
+  emit(tap, p, ".attn.qkv", qkv, {1, T_new, 3 * C});
 
   // Hand the new k and v to the cache. Everything downstream reads k and v
   // from there, so prefill and decode take the same path through attention.
   for (int t = 0; t < T_new; ++t) {
-    const float* row = qkv.data() + static_cast<size_t>(t) * 3 * C;
+    const float* row = qkv + static_cast<size_t>(t) * 3 * C;
     float* kdst = cache.k(i, start_pos + t);
     float* vdst = cache.v(i, start_pos + t);
     for (int c = 0; c < C; ++c) {
@@ -135,80 +163,92 @@ void Model::block(int i, float* x, int start_pos, int T_new, KVCache& cache,
   }
 
   // q is indexed locally (new rows only); k and v absolutely (all positions).
-  const auto q_at = [&](int t, int h) { return qkv.data() + (static_cast<size_t>(t) * 3 * C) + static_cast<size_t>(h) * dh; };
+  const auto q_at = [&](int t, int h) { return qkv + (static_cast<size_t>(t) * 3 * C) + static_cast<size_t>(h) * dh; };
   const auto k_at = [&](int t, int h) { return cache.k(i, t) + static_cast<size_t>(h) * dh; };
   const auto v_at = [&](int t, int h) { return cache.v(i, t) + static_cast<size_t>(h) * dh; };
+  float* scores = ws.scores.data();
+  const auto row_at = [&](int h, int qi) { return scores + ((static_cast<size_t>(h) * T_new) + qi) * total; };
 
   // Scale by 1/sqrt(d_head) = 1/sqrt(64), NOT 1/sqrt(d_model).
   const float scale = 1.0f / std::sqrt(static_cast<float>(dh));
 
-  // [H, T_new, total]: every new query against every position so far.
-  std::vector<float> scores(static_cast<size_t>(H) * T_new * total);
-  for (int h = 0; h < H; ++h) {
-    for (int qi = 0; qi < T_new; ++qi) {
-      float* row = scores.data() + ((static_cast<size_t>(h) * T_new) + qi) * total;
-      for (int kj = 0; kj < total; ++kj) {
-        row[kj] = backend::dot(q_at(qi, h), k_at(kj, h), static_cast<size_t>(dh)) * scale;
-      }
+  // Attention runs as H * T_new independent rows -- one query of one head --
+  // and each row writes only its own slice of `scores` and of `merged`. That
+  // disjointness is the same property linear() is threaded on, so the result
+  // does not depend on the thread count or the schedule. It used to run on the
+  // calling thread alone, which at long context is most of the work.
+
+  // [H, T_new, total]: every new query against every position so far. A query
+  // at absolute position start_pos + qi may see keys 0..start_pos + qi; the
+  // rest is masked below and never read. It is computed only when tapped, so
+  // the oracle's dump keeps the finite upper triangle it always had -- the
+  // comparison ignores it, but engine-to-engine checksums do not.
+  threads::parallel_for(H * T_new, [&](int item) {
+    const int h = item / T_new;
+    const int qi = item % T_new;
+    float* row = row_at(h, qi);
+    const int end = tap ? total : start_pos + qi + 1;
+    for (int kj = 0; kj < end; ++kj) {
+      row[kj] = backend::dot(q_at(qi, h), k_at(kj, h), static_cast<size_t>(dh)) * scale;
     }
-  }
+  });
   // Tapped before masking, so the oracle holds finite numbers. The comparison
   // only trusts the causal lower triangle; how an engine spells "masked" shows
   // up in .probs, where it actually matters.
-  emit(tap, p + ".attn.scores", scores.data(), {1, H, T_new, total});
+  emit(tap, p, ".attn.scores", scores, {1, H, T_new, total});
 
+  // Mask, softmax, then probs @ v, merging heads back into [T_new, C].
+  //
   // Causal mask: position t may not attend to anything after t. Row qi is at
   // absolute position start_pos + qi, so during single-token decode the row is
   // entirely unmasked -- there is nothing after the token being generated.
+  //
+  // The weighted sum stops at the last visible key. Masked positions carry an
+  // exact zero, and they come after every visible one, so leaving out the
+  // trailing `dst += 0 * v` terms changes nothing but the time: a prefill used
+  // to spend half its probs @ v on them.
   const float neg_inf = -std::numeric_limits<float>::infinity();
-  for (int h = 0; h < H; ++h) {
-    for (int qi = 0; qi < T_new; ++qi) {
-      float* row = scores.data() + ((static_cast<size_t>(h) * T_new) + qi) * total;
-      for (int kj = start_pos + qi + 1; kj < total; ++kj) row[kj] = neg_inf;
+  float* merged = ws.merged.data();
+  threads::parallel_for(H * T_new, [&](int item) {
+    const int h = item / T_new;
+    const int qi = item % T_new;
+    const int last = start_pos + qi;
+    float* row = row_at(h, qi);
+    for (int kj = last + 1; kj < total; ++kj) row[kj] = neg_inf;
+    ops::softmax_rows(row, 1, total);
+
+    float* dst = merged + static_cast<size_t>(qi) * C + static_cast<size_t>(h) * dh;
+    std::fill(dst, dst + dh, 0.0f);
+    for (int kj = 0; kj <= last; ++kj) {
+      backend::axpy(row[kj], v_at(kj, h), dst, static_cast<size_t>(dh));
     }
-  }
+  });
+  emit(tap, p, ".attn.probs", scores, {1, H, T_new, total});
 
-  ops::softmax_rows(scores.data(), H * T_new, total);
-  emit(tap, p + ".attn.probs", scores.data(), {1, H, T_new, total});
+  float* proj = ws.proj.data();
+  ops::linear(merged, L.attn_proj_w, L.attn_proj_b, proj, T_new, C, C);
+  emit(tap, p, ".attn.out", proj, {1, T_new, C});
 
-  // probs @ v, then merge heads back into [T_new, C].
-  std::vector<float> merged(TC, 0.0f);
-  for (int h = 0; h < H; ++h) {
-    for (int qi = 0; qi < T_new; ++qi) {
-      const float* prow = scores.data() + ((static_cast<size_t>(h) * T_new) + qi) * total;
-      float* dst = merged.data() + static_cast<size_t>(qi) * C + static_cast<size_t>(h) * dh;
-      // Every j, not just j <= qi: masked positions carry an exact zero, so the
-      // sum is identical either way. Skipping them is a Phase 3 optimization.
-      for (int kj = 0; kj < total; ++kj) {
-        backend::axpy(prow[kj], v_at(kj, h), dst, static_cast<size_t>(dh));
-      }
-    }
-  }
-
-  std::vector<float> attn_out(TC);
-  ops::linear(merged.data(), L.attn_proj_w, L.attn_proj_b, attn_out.data(), T_new, C, C);
-  emit(tap, p + ".attn.out", attn_out.data(), {1, T_new, C});
-
-  backend::add(attn_out.data(), x, TC);  // residual
+  backend::add(proj, x, TC);  // residual
 
   // ---- mlp ----------------------------------------------------------------
-  ops::layernorm(x, L.ln_2_w, L.ln_2_b, normed.data(), T_new, C, static_cast<float>(cfg_.layer_norm_eps));
-  emit(tap, p + ".ln_2.out", normed.data(), {1, T_new, C});
+  ops::layernorm(x, L.ln_2_w, L.ln_2_b, normed, T_new, C, static_cast<float>(cfg_.layer_norm_eps));
+  emit(tap, p, ".ln_2.out", normed, {1, T_new, C});
 
-  std::vector<float> hidden(static_cast<size_t>(T_new) * F);
-  ops::linear(normed.data(), L.c_fc_w, L.c_fc_b, hidden.data(), T_new, C, F);
-  emit(tap, p + ".mlp.fc.out", hidden.data(), {1, T_new, F});
+  float* hidden = ws.hidden.data();
+  const size_t TF = static_cast<size_t>(T_new) * F;
+  ops::linear(normed, L.c_fc_w, L.c_fc_b, hidden, T_new, C, F);
+  emit(tap, p, ".mlp.fc.out", hidden, {1, T_new, F});
 
-  ops::gelu_new(hidden.data(), hidden.data(), hidden.size());
-  emit(tap, p + ".mlp.act.out", hidden.data(), {1, T_new, F});
+  ops::gelu_new(hidden, hidden, TF);
+  emit(tap, p, ".mlp.act.out", hidden, {1, T_new, F});
 
-  std::vector<float> mlp_out(TC);
-  ops::linear(hidden.data(), L.mlp_proj_w, L.mlp_proj_b, mlp_out.data(), T_new, F, C);
-  emit(tap, p + ".mlp.out", mlp_out.data(), {1, T_new, C});
+  ops::linear(hidden, L.mlp_proj_w, L.mlp_proj_b, proj, T_new, F, C);
+  emit(tap, p, ".mlp.out", proj, {1, T_new, C});
 
-  backend::add(mlp_out.data(), x, TC);  // residual
+  backend::add(proj, x, TC);  // residual
 
-  emit(tap, p + ".out", x, {1, T_new, C});
+  emit(tap, p, ".out", x, {1, T_new, C});
 }
 
 }  // namespace gpt2

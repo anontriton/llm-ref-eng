@@ -24,15 +24,16 @@ it on localhost -- the same directory GitHub Pages publishes.
 
 | File | Role |
 |---|---|
-| `build.sh` | build a backend |
+| `build.sh` | build a backend; `mt` adds threads, `fast` the FMA tier |
 | `pack.py`, `weights.lock.json` | assemble the static site; the one weight file it may contain |
-| `serve.sh` | serve the site on localhost |
+| `serve.sh` | serve the site on localhost, cross-origin isolated |
+| `coi-sw.js` | a service worker that isolates the page where the host cannot send headers |
 | `index.html` | the page: prompt, sampling controls, streamed output, timings |
 | `worker.js` | downloads and verifies the weights, tokenizes, runs prefill and decode, streams text |
 | `engine.js` | `engine/tools/gpt2_web.cpp`'s C API wrapped for JavaScript |
 | `sampling.js` | greedy (argmax, first index on ties), temperature + top-k, a seeded RNG |
 | `tokenizer.js` | GPT-2's byte-level BPE, hand-written, no dependencies |
-| `test_web.mjs` | holds the browser module to the command-line engine |
+| `test_web.mjs` | holds both browser modules, single and threaded, to the command-line engine |
 | `test_page.mjs` | the built site in headless Chrome -- the last gate before a deploy |
 | `test_tokenizer.mjs`, `tokenizer_cases.json` | holds the tokenizer to Hugging Face's ids |
 
@@ -163,15 +164,23 @@ under Node and records it as `wasm32`.
 - **In Chrome** the page decodes at 21 ms/token, about 47 tokens/s, a little
   faster than the same module under Node; prefill takes 94 ms for 5 tokens.
   The weights load in 250 ms from a local server.
+- **Threads** (measured later, on an Apple M4 Max under Node, so compare
+  within the row): the threaded build prefills 5.4x faster at 8 threads
+  (885 -> 165 ms) and decodes no faster (11.3 -> 11.7 ms), the same as native --
+  a one-row step is too little work per `parallel_for` to pay for the wake-ups
+  ([finding 15](../docs/findings.md#15-threads-sped-up-prefill-and-did-nothing-for-decode)).
 
 ## Hosting
 
 **https://anontriton.github.io/llm-ref-eng/** is published by
 `.github/workflows/pages.yml`, and only after the whole gate passes on that
 commit, on a clean runner, from the checkpoint up: the wasm unit tests, the
-oracle comparison and 50 greedy steps on the shipped backend, the tokenizer and
+oracle comparison, whole-sequence and KV-cached, and 50 greedy steps on the
+shipped backend, the threaded build's bit-identity to it, native AVX2 against
+the oracle and bit-identical to native scalar, the tokenizer and
 web-module tests, the shipped weights' eval against fp32, `pack.py`'s pin
-check, and `test_page.mjs`. Pull requests run the same gate and publish
+check, and `test_page.mjs`. Emscripten is pinned (6.0.10): the wasm build's
+bits depend on its libm, so a new toolchain is a reviewed change. Pull requests run the same gate and publish
 nothing.
 
 - **The weights are cut into 32 MiB parts.** GitHub refuses files over 100 MB;
@@ -192,6 +201,13 @@ nothing.
   only once it is complete.
 - **Phones ask first.** 129 MB and a few hundred MB of memory is a lot to
   take unasked.
+- **Threads come from a service worker.** They need `SharedArrayBuffer`, which
+  needs the page cross-origin isolated, which needs COOP/COEP headers GitHub
+  Pages cannot send. `coi-sw.js` re-serves same-origin responses with them;
+  the first visit registers it and reloads once, and a browser that refuses
+  any of it gets the single-threaded build, with a session flag so a refusal
+  cannot become a reload loop. `test_page.mjs` serves without the headers, as
+  Pages does, and requires the page to come up isolated on 8 threads.
 
 ## Decisions
 
@@ -209,12 +225,18 @@ nothing.
   run uses seed 42, so the page opens on a repeatable example; each later run
   rolls a new seed into the box, so the seed shown always made the text shown;
   typing a seed keeps it, which repeats that run exactly.
-- **No threads.** The engine's pool is `std::thread`, which Emscripten supports
-  only with pthreads, which need `SharedArrayBuffer`, which needs COOP/COEP
-  headers from whatever serves the page. The pool never exists at one thread,
-  so the build degrades cleanly; `test_threading` is disabled rather than
-  dropped, so ctest still lists it. Native reaches 42.8 tokens/s at 8 threads,
-  so this is the largest remaining gap.
+- **Two builds, one engine.** Threads are `std::thread` over pthreads, which
+  need shared memory -- a property of the whole module -- so the threaded
+  engine is a second build (`web/build.sh wasm_simd128 mt`), loaded only by an
+  isolated page. Its 7 workers are created when the module loads, because a
+  browser starts a Worker only once the creating thread yields, and the pool
+  blocks; asking for more than 8 threads is an error, not a hang. It is held
+  to the single-threaded build bit for bit, and `test_threading` runs in it.
+- **Memory views are made fresh.** In the threaded build any thread may grow
+  wasm memory, and the module refreshes its `HEAP*` views only for growth on
+  the calling thread, so `engine.js` builds each view from `wasmMemory` at the
+  moment it is used. WebCrypto will not hash shared memory either, so the
+  threaded page copies the weights out once for the sha256.
 - **Node-only link flags are per tool.** `NODERAWFS` and `EXIT_RUNTIME` apply
   to the command-line tools and tests; `gpt2_web` has neither, so the same
   module runs in a browser worker and in Node.

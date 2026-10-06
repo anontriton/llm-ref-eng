@@ -19,7 +19,8 @@ The oracle is the contract between the PyTorch reference and the C++ engine.
   from a previous build cannot quietly pass.
 
 ## Runs
-Five fixed prompts, chosen to stress different things:
+Five fixed prompts, chosen to stress different things, and one run that fills
+the context window:
 
 | run | T | why |
 |---|---|---|
@@ -28,8 +29,24 @@ Five fixed prompts, chosen to stress different things:
 | `code` | 7 | non-prose token distribution |
 | `newline` | 1 | degenerate: a 1x1 attention matrix |
 | `long` | 90 | position embeddings well past the start of the table |
+| `context` | 1024 | the whole window: every row of `wpe`, attention over a long past |
 
-123 tensors per run, 615 total, ~105 MB.
+123 tensors per run, 738 total, ~2.1 GB -- `context` is nearly all of it, each
+attention tensor 12 x 1024 x 1024. Its ids are the first 1024 of the pinned
+eval corpus (`eval/corpus.tsv`), checked against `eval/corpus.json`.
+
+`context` is different in two ways, both recorded in its manifest entry. Its
+reference is the model run in **float64** (`"reference_dtype": "float64"`),
+rounded to float32 for storage, with each tensor's `fp32_budget` recording how
+much of the rule PyTorch's own fp32 forward uses against it. And
+`"whole_sequence": "report"`: a whole-sequence dump of it is compared and its
+misses reported, not failed, while a KV-cached dump -- row 1023, which attends
+over every earlier position's keys and values -- is gated as usual. At 1024
+positions no fp32 implementation meets the rule at every element, PyTorch's
+included; [finding 13](../docs/findings.md#13-at-1024-positions-no-fp32-implementation-meets-the-fp32-rule)
+has the measurements and the criterion that was tried first and rejected. A
+shape, NaN or provenance failure fails in either mode, and the marking is read
+from the reference only: a candidate cannot declare itself report-only.
 
 ## Tensor naming
 Stable and hierarchical, recorded in forward order (`order` in the manifest):
@@ -75,6 +92,11 @@ independent limits: at GPT-2's outlier magnitudes (~2650) one fp32 ulp already
 exceeds 1e-4. The manifest's `rel_floor` now only gates the `max_rel` figure
 `compare.py` reports as a diagnostic; it does not decide pass/fail.
 
+A tensor may hold one position of a sequence rather than all of them: every
+tensor of a KV-cached dump (the run's `kv_row`), or the logits of a forward run
+under `Logits::Last` (the record's own `row`, from `gpt2_dump --last-logits`).
+`compare.py` slices the reference at that position.
+
 `compare.py` reports each passing run's worst tensor as a percentage of its
 budget. That headroom is the number to watch across Phase 3: an optimization
 that moves it sharply has changed the arithmetic, even if it still passes.
@@ -90,8 +112,13 @@ WikiText-2 slice, top-1 agreement rate vs fp32, and KL divergence of logits.
     python oracle/compare.py <candidate> --run capital -v
     python oracle/compare.py <candidate> --allow-subset   # during bring-up
     python oracle/test_compare.py                     # test the tester
+    python oracle/identical.py <dump> <dump> --verify  # bit-identity, engine vs engine
 
 Exit codes: 0 pass, 1 numeric divergence, 2 provenance or usage error.
+
+`identical.py` asks the stricter question `compare.py` does not: did two engine
+runs produce exactly the same bits? It is how "this optimization, this backend,
+this thread count changes nothing" is checked rather than argued.
 
 Built in Phase 1, and re-run on every optimization commit since -- native and,
 from Phase 5, wasm.

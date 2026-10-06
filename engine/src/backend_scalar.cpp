@@ -10,7 +10,16 @@
 
 namespace gpt2::backend {
 
+// Fast numerics (GPT2_NUMERICS=fast) lifts -ffp-contract=off for this file
+// and lets the compiler fuse `lane += a * b` wherever the target has a fused
+// multiply-add as baseline -- arm64, for one. On x86-64 without -mfma there is
+// none to fuse into, and the fast scalar build computes what the exact one
+// does under a different name.
+#if GPT2_FAST_NUMERICS
+const char* name() { return "scalar-fast"; }
+#else
 const char* name() { return "scalar"; }
+#endif
 
 namespace {
 

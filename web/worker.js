@@ -6,8 +6,8 @@
 //                  {type: "generate", prompt, maxTokens, temperature, topK, seed}
 //                  {type: "stop"}
 // Worker -> page:  {type: "progress", what, loaded, total}
-//                  {type: "ready", policy, backend, nCtx, vocabSize, loadMs,
-//                   weightsBytes, sha256, fromCache}
+//                  {type: "ready", policy, backend, threads, nCtx, vocabSize,
+//                   loadMs, weightsBytes, sha256, fromCache}
 //                  {type: "start", promptTokens}
 //                  {type: "text", text}
 //                  {type: "done", reason, promptTokens, generated, prefillMs, decodeMs}
@@ -15,12 +15,21 @@
 //
 // Paths are the static site's layout, which web/pack.py assembles -- the same
 // directory whether web/serve.sh serves it or GitHub Pages does.
-import createGpt2 from "./wasm/gpt2_web.mjs";
 import { Engine } from "./engine.js";
 import { rng, sample } from "./sampling.js";
 import { ENDOFTEXT, Tokenizer } from "./tokenizer.js";
 
 const MODEL = new URL("./model/", import.meta.url);
+
+// The engine comes in two builds of the same sources: wasm-mt/ with pthreads,
+// which needs SharedArrayBuffer and so a cross-origin-isolated page, and wasm/
+// without. Both are held to the same command-line engine by web/test_web.mjs,
+// and thread count cannot change a result, so which one loads changes only
+// the speed.
+const MODULE = self.crossOriginIsolated ? "./wasm-mt/gpt2_web.mjs" : "./wasm/gpt2_web.mjs";
+// Workers the threaded build creates up front (GPT2_WASM_POOL_THREADS), plus
+// the calling thread: the most it can use.
+const MAX_THREADS = 8;
 
 let engine = null;
 let tokenizer = null;
@@ -113,6 +122,13 @@ async function* weightChunks(manifest, cache, status) {
 }
 
 async function sha256Hex(bytes) {
+  // WebCrypto will not read shared memory, and in the threaded build wasm
+  // memory is a SharedArrayBuffer. There the file is copied out once for the
+  // digest -- 129 MB held briefly, the price of checking it with the
+  // browser's own SHA-256 rather than the engine's.
+  if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) {
+    bytes = bytes.slice();
+  }
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -135,6 +151,7 @@ async function load() {
   ]);
   tokenizer = new Tokenizer(vocab, merges);
 
+  const { default: createGpt2 } = await import(MODULE);
   engine = await Engine.create(createGpt2);
   const cache = await openCache(manifest.sha256);
   const status = { fromCache: true };
@@ -150,8 +167,11 @@ async function load() {
                         `(got ${got.slice(0, 12)}…, expected ${manifest.sha256.slice(0, 12)}…)`);
       }
     });
+  // 1 in the single-threaded build, whatever is asked.
+  engine.setThreads(Math.min(navigator.hardwareConcurrency || 1, MAX_THREADS));
   post({
     type: "ready", policy: engine.policy, backend: engine.backend,
+    threads: engine.threads,
     nCtx: engine.nCtx, vocabSize: engine.vocabSize,
     loadMs: performance.now() - t0, weightsBytes: manifest.bytes,
     sha256: manifest.sha256, fromCache: status.fromCache,

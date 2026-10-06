@@ -18,7 +18,8 @@
 #   3. scripts/convert_weights.py       -> weights/gpt2-124m.bin, the engine's format
 #   4. scripts/quantize_weights.py --wte-outliers 8
 #                                       -> weights/gpt2-124m-int8-wte-o8.bin, 129 MB
-#   5. web/build.sh wasm_simd128        the C++ engine compiled to WebAssembly
+#   5. web/build.sh wasm_simd128 [mt]   the C++ engine compiled to WebAssembly,
+#                                       single-threaded and threaded
 #   6. web/pack.py                      assemble the static site -- the same one
 #                                       GitHub Pages publishes
 #   7. web/serve.sh                     a local web server, localhost only
@@ -127,9 +128,11 @@ step "5/7  Build the engine for WebAssembly"
 # Incremental: a no-op when nothing changed. The first run also compiles
 # Emscripten's system libraries, which is the slow part.
 mkdir -p web/build
-web/build.sh wasm_simd128 >web/build/build.log 2>&1 ||
+# Twice: the threaded build is what a cross-origin-isolated page loads, the
+# other what any browser can; web/pack.py ships both.
+{ web/build.sh wasm_simd128 && web/build.sh wasm_simd128 mt; } >web/build/build.log 2>&1 ||
   { printf '  %s✗ build failed; the last lines of web/build/build.log:%s\n' "$red" "$reset"; tail -20 web/build/build.log; exit 1; }
-ok "web/build/engine-wasm_simd128/tools/gpt2_web.wasm"
+ok "web/build/engine-wasm_simd128{,-mt}/tools/gpt2_web.wasm"
 
 # --- 6. The site -------------------------------------------------------------
 step "6/7  Assemble the site"

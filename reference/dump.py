@@ -68,6 +68,46 @@ RUNS: dict[str, str] = {
     ),
 }
 
+# Runs given as token ids rather than text. The prompts above stop at position
+# 89, the eval's windows at 511, and the demo lets a sequence run to 1023, so
+# without this most of the context window -- most of wpe, and attention over a
+# long past -- was never checked layer by layer. "context" fills the window
+# exactly: the first n_ctx ids of the pinned eval corpus, checked against the
+# checksum eval/corpus.json records for the whole of it, so it adds no new
+# pinned input. Its dump is large -- each attention tensor is 12 x 1024 x 1024
+# -- about 2.0 GB of the oracle's 2.1.
+ID_RUNS: dict[str, str] = {
+    "context": "eval/corpus.tsv",
+}
+
+# Runs whose reference is computed in float64 rather than float32.
+#
+# At 1024 positions the fp32 rule stops being satisfiable by anything fp32.
+# Measured against this same model run in float64, PyTorch's own fp32 forward
+# breaks |x - ref| <= 1e-4 + 1e-3 * |ref| on 8 tensors, worst at 12x its
+# budget, and the engine on 4, worst at 10x -- every miss an element near zero
+# made by heavy cancellation, a score of -0.04 from terms summing to 148, a
+# logit of -0.018 in a row that runs to 100. Holding the engine to PyTorch's
+# fp32 numbers there measured PyTorch's rounding, not the engine: on every
+# failing tensor the engine was the closer of the two to float64.
+#
+# So for these runs the oracle is the float64 forward, rounded to float32 for
+# storage, and each tensor records `fp32_budget`: how much of the rule's
+# budget PyTorch's fp32 forward uses against it, for comparison.
+#
+# What gates is the KV-cached dump at the last position, held to the rule
+# unchanged: row 1023 attends over keys and values from every earlier
+# position, so their errors reach it, and it passes with room to spare. The
+# whole-sequence dump is compared and reported but does not gate. "No farther
+# from float64 than PyTorch fp32, tensor by tensor" was tried as the gate and
+# is not sound: it pits two independent roundings against each other 123
+# times. The engine was the closer on 15 of the 16 tensors near the limit and
+# lost ln_f.out by 20% -- with its own LayerNorm arithmetic at 1.5% of budget,
+# the loss inherited entirely from where rounding happened to fall upstream.
+# Passing that would have meant choosing a factor by hand. The other runs are
+# untouched: there the rule holds for both, with room to spare.
+FLOAT64_RUNS = {"context"}
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -77,12 +117,33 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def pinned_ids(tsv: str, n: int) -> list[int]:
+    """The first `n` ids of a pinned corpus, after checking the whole of it
+    against the checksum its .json records."""
+    path = ROOT / tsv
+    meta = json.loads(path.with_suffix(".json").read_text())
+    line = next(l for l in path.read_text().splitlines()
+                if l and not l.startswith("#"))
+    ids = [int(i) for i in line.split("\t")[2].split(",")]
+    digest = hashlib.sha256(
+        b"".join(i.to_bytes(4, "little") for i in ids)).hexdigest()
+    if digest != meta["ids_sha256"]:
+        raise SystemExit(f"{tsv}: ids do not match {path.with_suffix('.json').name}")
+    if len(ids) < n:
+        raise SystemExit(f"{tsv}: {len(ids)} ids, need {n}")
+    return ids[:n]
+
+
 def sha256_array(a: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()
 
 
 def dump_run(model, input_ids: torch.Tensor, run_dir: Path) -> list[dict]:
-    """Run one forward pass, writing each tapped tensor to its own .npy."""
+    """Run one forward pass, writing each tapped tensor to its own .npy.
+
+    A float64 model is written rounded to float32: the files are float32
+    whatever computed them, and that rounding is 6e-8 relative, far below the
+    rule's 1e-3."""
     run_dir.mkdir(parents=True, exist_ok=True)
     for stale in run_dir.glob("*.npy"):
         stale.unlink()
@@ -123,6 +184,30 @@ def dump_run(model, input_ids: torch.Tensor, run_dir: Path) -> list[dict]:
     return records
 
 
+def fp32_budgets(model, input_ids: torch.Tensor, run_dir: Path,
+                 records: list[dict]) -> None:
+    """Record, per tensor, how much of the fp32 rule PyTorch's own fp32
+    forward uses against the float64 dump already in `run_dir`.
+
+    The rule is applied by oracle/compare.py's own compare_tensor, so the
+    allowance is measured with exactly the arithmetic that will be held to
+    it."""
+    sys.path.insert(0, str(ROOT / "oracle"))
+    from compare import compare_tensor
+
+    by_name = {r["name"]: r for r in records}
+
+    def tap(name: str, value: torch.Tensor) -> None:
+        record = by_name[name]
+        truth = np.load(run_dir / record["file"]).astype(np.float64)
+        verdict = compare_tensor(truth, value.detach().numpy().astype(np.float64),
+                                 TOLERANCE, record.get("region"))
+        record["fp32_budget"] = verdict["budget"]
+
+    with torch.no_grad():
+        model(input_ids, tap=tap)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
@@ -132,16 +217,18 @@ def main() -> int:
                         help="list the runs and exit")
     args = parser.parse_args()
 
-    names = args.runs or list(RUNS)
-    unknown = [n for n in names if n not in RUNS]
+    every = list(RUNS) + list(ID_RUNS)
+    names = args.runs or every
+    unknown = [n for n in names if n not in every]
     if unknown:
         print(f"unknown run(s): {', '.join(unknown)}", file=sys.stderr)
-        print(f"available: {', '.join(RUNS)}", file=sys.stderr)
+        print(f"available: {', '.join(every)}", file=sys.stderr)
         return 2
 
     if args.list:
         for name in names:
-            print(f"  {name:10s} {RUNS[name]!r:.70}")
+            what = RUNS[name] if name in RUNS else f"<ids from {ID_RUNS[name]}>"
+            print(f"  {name:10s} {what!r:.70}")
         return 0
 
     # Single-threaded so the oracle is reproducible run to run: multithreaded
@@ -151,29 +238,52 @@ def main() -> int:
 
     print("loading reference model...")
     model = load_gpt2(args.weights)
+    model64 = None  # built on first use: a float64 copy is 1 GB
 
     from transformers import AutoTokenizer  # tokenization only
     tok = AutoTokenizer.from_pretrained(args.weights)
 
     runs = []
     for name in names:
-        prompt = RUNS[name]
-        input_ids = tok(prompt, return_tensors="pt").input_ids
+        if name in RUNS:
+            prompt = RUNS[name]
+            input_ids = tok(prompt, return_tensors="pt").input_ids
+        else:
+            ids = pinned_ids(ID_RUNS[name], model.cfg.n_ctx)
+            input_ids = torch.tensor([ids], dtype=torch.long)
+            # Carried for a human to read; nothing computes on it, and it need
+            # not re-encode to the same ids.
+            prompt = tok.decode(ids)
         run_dir = ACTIVATIONS / name
 
         print(f"  {name:10s} T={input_ids.shape[1]:<4d} ", end="", flush=True)
-        records = dump_run(model, input_ids, run_dir)
+        float64 = name in FLOAT64_RUNS
+        if float64:
+            if model64 is None:
+                model64 = load_gpt2(args.weights).double()
+            records = dump_run(model64, input_ids, run_dir)
+            fp32_budgets(model, input_ids, run_dir, records)
+        else:
+            records = dump_run(model, input_ids, run_dir)
         total = sum(np.prod(r["shape"]) for r in records)
-        print(f"{len(records):3d} tensors, {total * 4 / 1e6:.1f} MB")
+        print(f"{len(records):3d} tensors, {total * 4 / 1e6:.1f} MB"
+              + ("  (float64 reference)" if float64 else ""))
 
-        runs.append({
+        run = {
             "name": name,
             "prompt": prompt,
             "input_ids": input_ids[0].tolist(),
             "n_tokens": int(input_ids.shape[1]),
             "dir": f"activations/{name}",
-            "tensors": records,
-        })
+        }
+        if float64:
+            run["reference_dtype"] = "float64"
+            # compare.py: a whole-sequence candidate is reported, a KV-cached
+            # one gated. Said here, by the reference, so a candidate cannot
+            # declare its own way out of the gate.
+            run["whole_sequence"] = "report"
+        run["tensors"] = records
+        runs.append(run)
 
     cfg = model.cfg
     manifest = {

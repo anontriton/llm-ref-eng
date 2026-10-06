@@ -24,4 +24,22 @@ if [[ ! -f "$site/model/weights.json" ]]; then
 fi
 
 echo "http://localhost:$port/"
-exec python3 -m http.server "$port" --bind 127.0.0.1 --directory "$site"
+# http.server, plus the two headers that make the page cross-origin isolated
+# -- what the threaded engine needs, and what web/coi-sw.js supplies on GitHub
+# Pages, which cannot send them.
+exec python3 - "$port" "$site" <<'PY'
+import functools, http.server, sys
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
+                      ".mjs": "text/javascript", ".wasm": "application/wasm"}
+
+    def end_headers(self):
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        super().end_headers()
+
+port, site = int(sys.argv[1]), sys.argv[2]
+http.server.ThreadingHTTPServer(
+    ("127.0.0.1", port), functools.partial(Handler, directory=site)).serve_forever()
+PY

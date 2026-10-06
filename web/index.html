@@ -152,7 +152,8 @@
 
   <footer>Temperature 0 is greedy decoding, the mode the engine is validated in against the
     reference. Weights: <code>int8-wte-o8</code>, 129 MB, int8 with eight columns of the
-    embedding kept in fp32. Single-threaded. After the first visit the weights load from
+    embedding kept in fp32. Multi-threaded where the browser allows (cross-origin isolation,
+    which a small service worker arranges); single-threaded otherwise. After the first visit the weights load from
     this browser's cache.
     <p><a href="https://github.com/anontriton/llm-ref-eng">Source, and how every layer of it
     is validated</a> — PyTorch reference, C++ engine, WebAssembly.</p></footer>
@@ -160,6 +161,29 @@
 
 <script type="module">
 const $ = (id) => document.getElementById(id);
+
+// Threads need cross-origin isolation, which needs two response headers that
+// GitHub Pages cannot send. coi-sw.js adds them; it takes effect from the next
+// load, so the first visit registers it and reloads, once. Anything refused
+// along the way -- no service workers, private mode, a browser that will not
+// isolate -- leaves the page as it was, on the single-threaded engine. The
+// sessionStorage flag is what keeps a refusal from becoming a reload loop.
+async function isolate() {
+  try {
+    if (self.crossOriginIsolated) { sessionStorage.removeItem("coi-reload"); return; }
+    if (!("serviceWorker" in navigator) || !isSecureContext) return;
+    if (sessionStorage.getItem("coi-reload")) return;  // tried once already
+    await navigator.serviceWorker.register("./coi-sw.js");
+    await navigator.serviceWorker.ready;
+    sessionStorage.setItem("coi-reload", "1");
+    location.reload();
+    await new Promise(() => {});  // the reload replaces this page
+  } catch {
+    // single-threaded, then
+  }
+}
+await isolate();
+
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 
 const EXAMPLES = [
@@ -212,7 +236,8 @@ worker.onmessage = ({ data: m }) => {
       `the exact file the published evaluation measured.`;
     v.title = m.sha256;
     v.hidden = false;
-    $("s-engine").textContent = `${m.backend}, ${m.policy}`;
+    $("s-engine").textContent =
+      `${m.backend}, ${m.policy}, ${m.threads} thread${m.threads === 1 ? "" : "s"}`;
     nCtx = m.nCtx;
     loaded = true;
     $("go").disabled = false;

@@ -31,9 +31,26 @@ static_assert(gpt2::backend::kAccumLanes == 8,
 
 namespace gpt2::backend {
 
+#if GPT2_FAST_NUMERICS
+const char* name() { return "wasm_simd128-fast"; }
+#else
 const char* name() { return "wasm_simd128"; }
+#endif
 
 namespace {
+
+// acc + a * b. Exact numerics: multiply, then add -- two roundings, the
+// scalar backend's. Fast numerics (GPT2_NUMERICS=fast): relaxed SIMD's madd,
+// which the engine running it may fuse or not, so the fast build is not
+// reproducible across hosts even in principle. That is the trade the fast
+// tier makes, and why eval/metrics.py rather than bit-identity judges it.
+inline v128_t madd(v128_t a, v128_t b, v128_t acc) {
+#if GPT2_FAST_NUMERICS
+  return wasm_f32x4_relaxed_madd(a, b, acc);
+#else
+  return wasm_f32x4_add(acc, wasm_f32x4_mul(a, b));
+#endif
+}
 
 // Eight accumulator lanes as two registers.
 struct Acc {
@@ -94,10 +111,8 @@ float dot(const float* a, const float* b, size_t n) {
   Acc acc;
   for (size_t i = 0; i < body; i += kAccumLanes) {
     // Multiply, then add. Two roundings, as in the scalar backend.
-    acc.lo = wasm_f32x4_add(acc.lo, wasm_f32x4_mul(wasm_v128_load(a + i),
-                                                   wasm_v128_load(b + i)));
-    acc.hi = wasm_f32x4_add(acc.hi, wasm_f32x4_mul(wasm_v128_load(a + i + 4),
-                                                   wasm_v128_load(b + i + 4)));
+    acc.lo = madd(wasm_v128_load(a + i), wasm_v128_load(b + i), acc.lo);
+    acc.hi = madd(wasm_v128_load(a + i + 4), wasm_v128_load(b + i + 4), acc.hi);
   }
   return finish_tail(acc, a, b, body, tail);
 }
@@ -108,8 +123,8 @@ float dot_i8(const float* a, const int8_t* q, size_t n) {
   Acc acc;
   for (size_t i = 0; i < body; i += kAccumLanes) {
     const Widened w = widen_i8(q + i);
-    acc.lo = wasm_f32x4_add(acc.lo, wasm_f32x4_mul(wasm_v128_load(a + i), w.lo));
-    acc.hi = wasm_f32x4_add(acc.hi, wasm_f32x4_mul(wasm_v128_load(a + i + 4), w.hi));
+    acc.lo = madd(wasm_v128_load(a + i), w.lo, acc.lo);
+    acc.hi = madd(wasm_v128_load(a + i + 4), w.hi, acc.hi);
   }
   if (tail == 0) return reduce_lanes(acc);
   float lane[kAccumLanes];
@@ -130,8 +145,7 @@ void axpy(float alpha, const float* x, float* y, size_t n) {
   const size_t tail = n % 4;
   const size_t body = n - tail;
   for (size_t i = 0; i < body; i += 4) {
-    wasm_v128_store(y + i, wasm_f32x4_add(wasm_v128_load(y + i),
-                                          wasm_f32x4_mul(va, wasm_v128_load(x + i))));
+    wasm_v128_store(y + i, madd(va, wasm_v128_load(x + i), wasm_v128_load(y + i)));
   }
   for (size_t i = body; i < n; ++i) y[i] += alpha * x[i];
 }
@@ -142,10 +156,8 @@ void axpy_i8(float alpha, const int8_t* q, float* y, size_t n) {
   const size_t body = n - tail;
   for (size_t i = 0; i < body; i += kAccumLanes) {
     const Widened w = widen_i8(q + i);
-    wasm_v128_store(y + i, wasm_f32x4_add(wasm_v128_load(y + i),
-                                          wasm_f32x4_mul(va, w.lo)));
-    wasm_v128_store(y + i + 4, wasm_f32x4_add(wasm_v128_load(y + i + 4),
-                                              wasm_f32x4_mul(va, w.hi)));
+    wasm_v128_store(y + i, madd(va, w.lo, wasm_v128_load(y + i)));
+    wasm_v128_store(y + i + 4, madd(va, w.hi, wasm_v128_load(y + i + 4)));
   }
   for (size_t i = body; i < n; ++i) y[i] += alpha * static_cast<float>(q[i]);
 }

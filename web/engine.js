@@ -15,10 +15,23 @@ export class Engine {
     this.nCtx = 0;
     this.idsPtr = 0;
     this.idsCap = 0;
+    this.threads = 1;
   }
 
   error() {
     return this.m.UTF8ToString(this.m._gpt2_error());
+  }
+
+  // A view of wasm memory, made at the moment it is used. In the threaded
+  // build memory is a SharedArrayBuffer that any thread may grow -- a pool
+  // worker's first allocation can -- and the module refreshes its HEAP* views
+  // only when the growth happens on this thread, so a cached view can be too
+  // short. One made from the memory itself never is.
+  heap(Type) {
+    const memory = this.m.wasmMemory;
+    if (memory) return new Type(memory.buffer);
+    return { [Uint8Array.name]: this.m.HEAPU8, [Int32Array.name]: this.m.HEAP32,
+             [Float32Array.name]: this.m.HEAPF32 }[Type.name];
   }
 
   // Stream `total` bytes of weight file into the engine. `chunks` is any
@@ -28,20 +41,21 @@ export class Engine {
   //
   // `verify`, if given, is awaited with a view of the complete file before the
   // engine parses it; throwing from it aborts the load. The page uses it to
-  // check the sha256 without a second 129 MB copy.
+  // check the sha256 without a second 129 MB copy -- in the single-threaded
+  // build; the threaded one's memory is shared, which WebCrypto will not read.
   async loadWeights(total, chunks, onProgress, verify) {
     const ptr = this.m._gpt2_blob_alloc(total);
     if (!ptr) throw new Error(this.error());
     let at = 0;
     for await (const chunk of chunks) {
       if (at + chunk.length > total) throw new Error(`weights: more than the ${total} bytes promised`);
-      // HEAPU8 is re-read every time: growing memory replaces the view.
-      this.m.HEAPU8.set(chunk, ptr + at);
+      // A fresh view every time: growing memory replaces the buffer.
+      this.heap(Uint8Array).set(chunk, ptr + at);
       at += chunk.length;
       onProgress?.(at, total);
     }
     if (at !== total) throw new Error(`weights: got ${at} of ${total} bytes`);
-    if (verify) await verify(this.m.HEAPU8.subarray(ptr, ptr + total));
+    if (verify) await verify(this.heap(Uint8Array).subarray(ptr, ptr + total));
     if (!this.m._gpt2_load()) throw new Error(this.error());
     this.vocabSize = this.m._gpt2_vocab_size();
     this.nCtx = this.m._gpt2_n_ctx();
@@ -51,6 +65,13 @@ export class Engine {
 
   reset() {
     this.m._gpt2_reset();
+  }
+
+  // Use up to n threads. Returns the count in force: 1 in the build without
+  // pthreads, which is the one a page that is not cross-origin isolated gets.
+  setThreads(n) {
+    this.threads = this.m._gpt2_set_threads(n);
+    return this.threads;
   }
 
   // Tokens the engine holds; the position the next one takes.
@@ -66,9 +87,9 @@ export class Engine {
       this.idsCap = Math.max(ids.length, 1024);
       this.idsPtr = this.m._malloc(this.idsCap * 4);
     }
-    this.m.HEAP32.set(ids, this.idsPtr >> 2);
+    this.heap(Int32Array).set(ids, this.idsPtr >> 2);
     const p = this.m._gpt2_forward(this.idsPtr, ids.length);
     if (!p) throw new Error(this.error());
-    return this.m.HEAPF32.subarray(p >> 2, (p >> 2) + this.vocabSize);
+    return this.heap(Float32Array).subarray(p >> 2, (p >> 2) + this.vocabSize);
   }
 }

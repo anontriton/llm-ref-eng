@@ -149,6 +149,49 @@ def _as_kv_row(row: int, *, hold: int | None = None):
     return mutate
 
 
+def _last_logits(row: int | None, *, hold: int = -1):
+    """Reduce the candidate's logits to one position, as a forward under
+    Logits::Last writes them. `row` is what the record declares (None: it
+    declares nothing); `hold` is the position actually kept, -1 the last."""
+    def mutate(manifest: dict, dest: Path) -> None:
+        rewrite(manifest, dest, "logits",
+                lambda a: np.take(a, [hold % a.shape[1]], axis=1))
+        if row is not None:
+            record = next(r for r in manifest["runs"][0]["tensors"]
+                          if r["name"] == "logits")
+            record["row"] = row
+    return mutate
+
+
+def _report_reference(manifest: dict, dest: Path) -> None:
+    """Write dest/ref/: the reference manifest with this run marked the way
+    reference/dump.py marks the 1024-position run -- float64, whole sequence
+    reported rather than gated. Activations are the real oracle's."""
+    ref = json.loads(MANIFEST.read_text())
+    ref["runs"] = [r for r in ref["runs"] if r["name"] == RUN]
+    ref["runs"][0]["reference_dtype"] = "float64"
+    ref["runs"][0]["whole_sequence"] = "report"
+    (dest / "ref").mkdir()
+    (dest / "ref" / "activations").symlink_to(ORACLE / "activations")
+    (dest / "ref" / "manifest.json").write_text(json.dumps(ref))
+
+
+def _with_report_reference(*mutations):
+    def mutate(manifest: dict, dest: Path) -> None:
+        _report_reference(manifest, dest)
+        for m in mutations:
+            m(manifest, dest)
+    return mutate
+
+
+def _report_args(dest: Path) -> list[str]:
+    return ["--reference", str(dest / "ref" / "manifest.json")]
+
+
+def _self_declared_report(manifest: dict, dest: Path) -> None:
+    manifest["runs"][0]["whole_sequence"] = "report"
+
+
 def _quantized_policy(manifest: dict, dest: Path) -> None:
     manifest["tolerance"]["policy"] = "int8"
 
@@ -229,6 +272,43 @@ CASES = [
     # With one query row, the causal triangle cannot be read off the tensor's
     # own shape: np.tril of a 1-by-T grid marks a single column and would
     # excuse every other key the row actually attended to.
+    # Last-row logits: one tensor holds one position while every other tensor
+    # in the run holds all of them. The declared row is what gets compared --
+    # the last case proves it is not just trusted.
+    ("last-row logits compare against the reference's matching row",
+     _last_logits(4), 0, "ORACLE COMPARISON PASSED"),
+
+    ("last-row logits without a declared row are a shape failure",
+     _last_logits(None), 1, "first divergence at logits"),
+
+    ("last-row logits declaring the wrong row are caught",
+     _last_logits(4, hold=0), 1, "first divergence at logits"),
+
+    # The 1024-position run: its reference marks whole-sequence misses as
+    # reported, not gated, because no fp32 implementation meets the rule at
+    # every element there. These pin how narrow that is: only tolerance misses,
+    # only whole-sequence candidates, and only on the reference's say-so.
+    ("whole-sequence miss on a report run is reported, not failed",
+     _with_report_reference(
+         lambda m, d: rewrite(m, d, "block.5.attn.probs", _nudge(1e-2))),
+     0, "REPORT 1 tensor(s) past the rule", _report_args),
+
+    ("NaN on a report run still fails",
+     _with_report_reference(
+         lambda m, d: rewrite(m, d, "block.3.mlp.fc.out", _inject_nan)),
+     1, "nan pattern differs", _report_args),
+
+    ("KV-cached dump of a report run is gated",
+     _with_report_reference(
+         _as_kv_row(4),
+         lambda m, d: rewrite(m, d, "block.5.attn.probs", _nudge(1e-2))),
+     1, "first divergence at block.5.attn.probs", _report_args),
+
+    ("a candidate cannot declare its own run report-only",
+     lambda m, d: (_self_declared_report(m, d),
+                   rewrite(m, d, "block.5.attn.probs", _nudge(1e-2))),
+     1, "first divergence at block.5.attn.probs"),
+
     ("kv_row still checks the whole causal row of attn.scores",
      lambda m, d: (_as_kv_row(4)(m, d),
                    rewrite(m, d, "block.0.attn.scores",
@@ -245,10 +325,12 @@ def main() -> int:
         return 2
 
     passed = 0
-    for i, (name, mutate, want_code, want_text) in enumerate(CASES, 1):
+    for i, (name, mutate, want_code, want_text, *args) in enumerate(CASES, 1):
         with tempfile.TemporaryDirectory() as tmp:
-            candidate = build_candidate(Path(tmp) / "dump", mutate)
-            code, output = run_compare(candidate)
+            dest = Path(tmp) / "dump"
+            candidate = build_candidate(dest, mutate)
+            extra = args[0](dest) if args else []
+            code, output = run_compare(candidate, *extra)
 
         problems = []
         if code != want_code:

@@ -32,7 +32,11 @@ static_assert(gpt2::backend::kAccumLanes == 8,
 
 namespace gpt2::backend {
 
+#if GPT2_FAST_NUMERICS
+const char* name() { return "avx2-fast"; }
+#else
 const char* name() { return "avx2"; }
+#endif
 
 namespace {
 
@@ -47,9 +51,31 @@ struct CpuCheck {
                    "does not support AVX2; rebuild with -DGPT2_BACKEND=scalar\n");
       std::abort();
     }
+#if GPT2_FAST_NUMERICS
+    if (!__builtin_cpu_supports("fma")) {
+      std::fprintf(stderr,
+                   "this binary was built with GPT2_NUMERICS=fast, which uses "
+                   "FMA, but this CPU does not support it; rebuild with "
+                   "-DGPT2_NUMERICS=exact\n");
+      std::abort();
+    }
+#endif
   }
 };
 const CpuCheck cpu_check;
+
+// acc + a * b. Exact numerics: _mm256_mul_ps then _mm256_add_ps, rounding
+// twice as the scalar backend does. Fast numerics (GPT2_NUMERICS=fast): one
+// fused multiply-add, rounding once -- faster, slightly more accurate, and no
+// longer bit-identical to anything else, which is why the fast tier is judged
+// by tolerance and eval/metrics.py instead.
+inline __m256 madd(__m256 a, __m256 b, __m256 acc) {
+#if GPT2_FAST_NUMERICS
+  return _mm256_fmadd_ps(a, b, acc);
+#else
+  return _mm256_add_ps(acc, _mm256_mul_ps(a, b));
+#endif
+}
 
 // The scalar reduce_lanes, instruction for instruction:
 //   half=4:  lane[i] += lane[i + 4]   for i in 0..3
@@ -89,8 +115,7 @@ float dot(const float* a, const float* b, size_t n) {
   __m256 acc = _mm256_setzero_ps();
   for (size_t i = 0; i < body; i += kAccumLanes) {
     // Multiply, then add. Two roundings, as above.
-    acc = _mm256_add_ps(acc, _mm256_mul_ps(_mm256_loadu_ps(a + i),
-                                           _mm256_loadu_ps(b + i)));
+    acc = madd(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), acc);
   }
   return finish_tail(acc, a, b, body, tail);
 }
@@ -108,8 +133,7 @@ float dot_i8(const float* a, const int8_t* q, size_t n) {
   const size_t body = n - tail;
   __m256 acc = _mm256_setzero_ps();
   for (size_t i = 0; i < body; i += kAccumLanes) {
-    acc = _mm256_add_ps(acc, _mm256_mul_ps(_mm256_loadu_ps(a + i),
-                                           widen_i8(q + i)));
+    acc = madd(_mm256_loadu_ps(a + i), widen_i8(q + i), acc);
   }
   if (tail == 0) return reduce_lanes(acc);
   alignas(32) float lane[kAccumLanes];
@@ -125,8 +149,7 @@ void axpy_i8(float alpha, const int8_t* q, float* y, size_t n) {
   const size_t tail = n % kAccumLanes;
   const size_t body = n - tail;
   for (size_t i = 0; i < body; i += kAccumLanes) {
-    _mm256_storeu_ps(y + i, _mm256_add_ps(_mm256_loadu_ps(y + i),
-                                          _mm256_mul_ps(va, widen_i8(q + i))));
+    _mm256_storeu_ps(y + i, madd(va, widen_i8(q + i), _mm256_loadu_ps(y + i)));
   }
   for (size_t i = body; i < n; ++i) {
     y[i] += alpha * static_cast<float>(q[i]);
@@ -141,9 +164,7 @@ void axpy(float alpha, const float* x, float* y, size_t n) {
   const size_t tail = n % kAccumLanes;
   const size_t body = n - tail;
   for (size_t i = 0; i < body; i += kAccumLanes) {
-    _mm256_storeu_ps(y + i,
-                     _mm256_add_ps(_mm256_loadu_ps(y + i),
-                                   _mm256_mul_ps(va, _mm256_loadu_ps(x + i))));
+    _mm256_storeu_ps(y + i, madd(va, _mm256_loadu_ps(x + i), _mm256_loadu_ps(y + i)));
   }
   for (size_t i = body; i < n; ++i) y[i] += alpha * x[i];
 }
