@@ -34,11 +34,18 @@ From the repo root:
     cmake -S engine -B engine/build-avx2  -DGPT2_BACKEND=avx2
     web/build.sh wasm_simd128             # emcmake; see web/README.md
 
+    cmake ... -DGPT2_NUMERICS=fast        # any backend: FMA allowed
+
 Exactly one `src/backend_*.cpp` compiles -- they define the same symbols -- and
 only that translation unit gets ISA flags, so the kernels stay baseline and
 reach the vector units through `gpt2::backend::*`. Keep a build directory per
 backend; the two are not interchangeable and the CMake cache remembers which
 is which.
+
+No translation unit may contract a multiply and an add: `-ffp-contract=off` is
+global. GCC in ISO mode would not contract anyway, but clang does by default,
+and on arm64 it fused 30 multiply-adds in the scalar backend -- found by
+bit-identity, never by tolerance (finding 12).
 
 The AVX2 backend refuses FMA on purpose, built with `-mavx2 -ffp-contract=off`
 and no `-mfma`. Fusing rounds once where scalar rounds twice, which would put
@@ -51,13 +58,22 @@ Emscripten: two v128 per eight lanes, `-msimd128` on that file only, 615 of
 615 identical. Not against *native* scalar -- GELU's `tanh` comes from musl
 there rather than glibc, and the two disagree in the last bits.
 
+`GPT2_NUMERICS=fast` is the one exception, and opt-in: FMA in AVX2 (`-mfma`),
+relaxed-SIMD madd in wasm (`-mrelaxed-simd`), compiler contraction in scalar.
+Each backend's `madd` helper is the whole difference. A fast build names
+itself `<backend>-fast` in every manifest and benchmark, is bit-identical to
+nothing, and is judged by `compare.py`'s tolerance and by `eval/metrics.py`
+against the exact fp32 engine instead.
+
 ## Tools
 
     gpt2_dump      activations in the oracle layout; --kv-cache dumps the last
                    token through the cache instead, and compare.py slices the
-                   reference to the matching row
+                   reference to the matching row; --last-logits runs under
+                   Logits::Last, as generation does
     gpt2_generate  greedy decode; --kv-cache selects the cached path
-    gpt2_bench     prefill and decode timings -> bench/run.py
+    gpt2_bench     prefill and decode timings -> bench/run.py; last-row logits
+                   unless --all-logits, and the JSON says which
     gpt2_eval      per-position nll, top-1 and sampled logits -> eval/metrics.py
     gpt2_kernelbench  per-shape matmul timings on the real weights; bench/
                    says whether the engine got faster, this says which kernel
@@ -80,7 +96,12 @@ right formula; `compare.py` checks the whole engine against the reference.
 - `ops` -- layernorm, linear (pairwise-summed along the inner dimension),
   tied lm_head, gelu_new, softmax. No intrinsics.
 - `model` -- the forward pass, a line-by-line port of `reference/model.py`,
-  with a tap for every oracle tensor.
+  with a tap for every oracle tensor. `Logits::All` (the default, what the
+  oracle validates) or `Logits::Last` (one row, what generation reads -- the
+  same bits for that row). Attention runs threaded, one item per head and
+  query; scores above the diagonal are computed only when tapped, and the
+  weighted sum stops at the last visible key. Scratch buffers are allocated
+  once per forward, not per block.
 - `weights` -- reads the flat file `scripts/convert_weights.py` writes.
 - `dump`, `npy`, `sha256`, `json`, `runs` -- the oracle contract: write-only
   `.npy`, per-tensor checksums, a manifest `compare.py` accepts.
@@ -90,7 +111,8 @@ right formula; `compare.py` checks the whole engine against the reference.
   passes that must agree forever is the arrangement that rots.
 - `threading` -- a pool and a `parallel_for`. Work items own disjoint tiles of
   the output and nothing reduces across a tile boundary, so thread count is not
-  a numerical parameter: 615 tensors are bit-identical at 1, 3 and 8 threads.
+  a numerical parameter: all oracle tensors are bit-identical at 1, 3 and 8
+  threads, and in the threaded wasm build at 1, 4 and 8.
   Serial by default; at `count() == 1` there is no pool and no locks.
 - `tools/` -- five executables, above, and the browser's gpt2_web.
 

@@ -13,6 +13,9 @@ reference.
 - Every optimization commit re-runs oracle validation. No exceptions.
 - SIMD goes behind an abstraction layer (AVX2 backend now, wasm_simd128 later).
   No raw intrinsics in kernel logic.
+- No multiply-add contraction in the exact tier, anywhere: `-ffp-contract=off`
+  is global. `GPT2_NUMERICS=fast` is the only exception, opt-in, and a fast
+  build is judged by tolerance and eval, never presented as bit-identical.
 - C++ activations are dumped to .npy and compared in Python. Do not write an
   npy reader in C++.
 
@@ -39,6 +42,12 @@ stream has outlier dimensions near 2650, where one fp32 ulp is 2.4e-4, so a
 bare 1e-4 absolute limit would demand bit-exact agreement with PyTorch's GEMM
 summation order -- not a correctness property. Revised in Phase 2 on evidence;
 see the Phase 2 note below.
+
+At 1024 positions the rule is beyond fp32 -- PyTorch's own fp32 forward misses
+it against float64 -- so the oracle's `context` run has a float64 reference and
+gates on its KV-cached last position under the rule unchanged; its
+whole-sequence comparison is reported, not gated. The marking lives in the
+reference manifest only. See "After Phase 6" below.
 
 ## Tolerance policy (quantized phases)
 Layer-wise matching is void. `oracle/compare.py` refuses a non-fp32 policy
@@ -74,6 +83,8 @@ Commit to bench/results/. Built BEFORE optimization starts.
 - `engine/` - C++ engine (`src/`, `include/gpt2/`, `tests/`)
 - `oracle/` - dumped reference activations + manifest + `compare.py`
 - `bench/` - benchmark harness + `results/` (committed JSON, commit-tagged)
+- `oracle/identical.py` - engine-vs-engine bit-identity, for every claim that
+  a change moves no number
 - `eval/` - quantized-phase harness: pinned corpus, `metrics.py`, `results/`
 - `web/` - Emscripten build + demo page
 - `scripts/` - weight download, format conversion, quantization, pinned inputs
@@ -279,4 +290,38 @@ included -- ran without a failure, and the regenerated oracle matched the
 committed manifest's 615 checksums, the three weight files byte for byte; and
 `./demo.sh` took a clone with nothing installed to a served page. Every
 relative link and anchor in the docs resolves.
+
+## After Phase 6
+
+Work after the phases closed, done on an Apple M4 Max (arm64, macOS, Homebrew
+Emscripten 6.0.10) rather than the x86 machine above, so AVX2 was compiled for
+x86-64 but not run, and timings are ratios. `docs/findings.md` 12-16 has the
+measurements. Each item was validated with `oracle/identical.py` against the
+commit before it unless it says otherwise.
+
+- `-ffp-contract=off` made global. Clang fused 30 multiply-adds in the scalar
+  backend on arm64; the native build parted from wasm at the first matmul
+  instead of the first libm call. A no-op on x86 GCC.
+- `Logits::Last`, masked attention skipped, attention threaded, one workspace
+  per forward: 738/738 tensors bit-identical, native and both wasm backends,
+  at 1, 3 and 8 threads; prefill 2.7x on the M4.
+- A sixth oracle run, `context`, T=1024 from the pinned eval corpus. The
+  engine failed the fp32 rule there while sitting closer to float64 than
+  PyTorch fp32 does; no fp32 implementation meets the rule at that length.
+  "No farther from float64 than PyTorch fp32, per tensor" was built and
+  rejected -- the engine lost `ln_f.out` by 20% on inherited rounding -- so the
+  run gates on KV row 1023 (passes at 39%) and reports the rest.
+  `oracle/test_compare.py` passes 25/25.
+- `GPT2_NUMERICS=fast`: FMA / relaxed-SIMD madd. Passes the oracle and the eval
+  against the exact engine (x1.00000, 100.000% top-1) and is barely faster on
+  the M4's scalar and wasm paths; the AVX2 case it was built for is unmeasured.
+- wasm threads: a pthreads build loaded by cross-origin-isolated pages, which
+  `web/coi-sw.js` arranges on GitHub Pages. Bit-identical to the
+  single-threaded build; prefill 5.4x at 8 threads, decode unchanged.
+- CI: emsdk pinned to 6.0.10; new gates for the oracle self-tests, the
+  KV-cached and last-logits dumps, and the threaded build's bit-identity.
+
+The committed `oracle/manifest.json` gains the `context` run only; the five
+original runs' records are the x86 machine's, unchanged (arm64 torch writes
+different bytes, as CI's does).
 

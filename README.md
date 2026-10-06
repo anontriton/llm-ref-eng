@@ -6,17 +6,21 @@ A GPT-2 124M inference engine built three times: a hand-written PyTorch
 reference, a dependency-free C++ engine, and a WebAssembly build that runs in
 the browser. The point is not that it runs. It is that every stage is **proven
 against the one before it** -- the C++ engine is compared layer by layer
-against the reference, 615 activations across five prompts, and no
-optimization was allowed to land without passing that comparison again.
+against the reference, 738 activations across six runs up to the full
+1024-token context, and no optimization was allowed to land without passing
+that comparison again.
 
-- **Correct:** every one of 615 intermediate tensors within tolerance of the
-  PyTorch reference, the worst at 52% of its budget; 50 greedy tokens identical.
+- **Correct:** every one of the 615 tensors of the five prompts within
+  tolerance of the PyTorch reference, the worst at 52% of its budget; the full
+  1024-token context checked against a float64 reference; 50 greedy tokens
+  identical.
 - **Fast:** 0.11 → 42.6 tokens/s natively through a KV cache, blocked GEMM,
   AVX2 and threads -- 373x, with every step bit-identical to the one before.
 - **Small:** int8 weights at 129 MB, a quarter of fp32, judged on perplexity,
   top-1 agreement, KL and decisive disagreement against the fp32 engine.
-- **In the browser:** the same C++ compiled to wasm SIMD, 21 ms per token in
-  Chrome, with a hand-written tokenizer matching Hugging Face's ids exactly.
+- **In the browser:** the same C++ compiled to wasm SIMD, threaded where the
+  browser allows and bit-identical either way, with a hand-written tokenizer
+  matching Hugging Face's ids exactly.
 
 No framework, no BLAS, no model code from Hugging Face in anything that runs --
 HF appears only as a check on the hand-written reference, never as the
@@ -83,8 +87,12 @@ max logit error 7.6e-5 over four prompts, 50 of 50 greedy tokens identical.
 
 From then on the reference is the **oracle**. It dumps every intermediate
 activation -- embeddings, each block's layer norms, QKV, attention scores and
-outputs, MLP, residuals, final logits -- for five fixed prompts, 615 tensors,
-each with a sha256 in a committed [manifest](oracle/manifest.json). The C++
+outputs, MLP, residuals, final logits -- for five fixed prompts and one run
+that fills the 1024-position context, 738 tensors, each with a sha256 in a
+committed [manifest](oracle/manifest.json). At 1024 positions no fp32
+implementation meets the rule at every element, PyTorch's included, so that
+run's reference is computed in float64 and its last position gates
+([finding 13](docs/findings.md#13-at-1024-positions-no-fp32-implementation-meets-the-fp32-rule)). The C++
 engine dumps the same tensors in the same layout, and
 [`oracle/compare.py`](oracle/compare.py) is the only thing that decides whether
 they match. It walks them in forward order and reports the *first* divergence,
@@ -94,8 +102,10 @@ because once block 3 is wrong everything after it is an echo.
 |---|---|---|
 | PyTorch reference | Hugging Face `GPT2LMHeadModel` | `reference/validate_hf.py` |
 | C++ engine, every backend | the reference, layer by layer | `oracle/compare.py`, `oracle/check_greedy.py` |
-| Each optimization | the engine before it, bit for bit | engine dumps diffed against engine dumps |
+| Each optimization | the engine before it, bit for bit | `oracle/identical.py` over engine dumps |
 | AVX2 and wasm SIMD | scalar, bit for bit | a fixed 8-lane accumulation order, no FMA |
+| Threaded wasm | single-threaded wasm, bit for bit | `oracle/identical.py`, `web/test_web.mjs` |
+| `GPT2_NUMERICS=fast` (FMA) | the reference's tolerance, and the exact engine | `oracle/compare.py`, `eval/metrics.py` |
 | int8 weights | the fp32 engine, on a pinned WikiText-2 slice | `eval/metrics.py` |
 | JavaScript tokenizer | Hugging Face's ids | `web/test_tokenizer.mjs` |
 | Browser build | the command-line engine | `web/test_web.mjs`, and the page in headless Chrome |
@@ -132,6 +142,12 @@ The same engine as WebAssembly, single-threaded, beside native single-threaded:
 | wasm SIMD, int8-wte-o8 (Node) | 23.11 | 23.5 ms |
 | wasm SIMD, int8-wte-o8 (Chrome) | -- | 21 ms |
 
+Since then, on an Apple M4 Max rather than the machine above, so as ratios:
+computing only the last row of logits and skipping masked attention made
+prefill 2.7x faster, bit for bit; threaded wasm prefills 5.4x faster at 8
+threads; neither moves decode, which threads do not help
+([findings 14-16](docs/findings.md#14-most-of-a-prefill-was-arithmetic-nothing-read)).
+
 ### Quantization
 
 Weight-only int8, symmetric, one scale per output channel, judged against the
@@ -160,7 +176,7 @@ wasm build. From the repository root:
 
     .venv/bin/python scripts/download_weights.py          # checksum-verified
     .venv/bin/python reference/validate_hf.py             # reference vs HF
-    .venv/bin/python reference/dump.py                    # build the oracle
+    .venv/bin/python reference/dump.py                    # build the oracle, ~2.1 GB
     .venv/bin/python scripts/convert_weights.py --verify
     .venv/bin/python scripts/export_runs.py
 
@@ -169,10 +185,14 @@ wasm build. From the repository root:
     ctest --test-dir engine/build-avx2
     engine/build-avx2/tools/gpt2_dump --threads 8
     .venv/bin/python oracle/compare.py engine/dumps/manifest.json
+    engine/build-avx2/tools/gpt2_dump --kv-cache --threads 8 --out engine/dumps_kv
+    .venv/bin/python oracle/compare.py engine/dumps_kv/manifest.json
     .venv/bin/python oracle/check_greedy.py --kv-cache --engine engine/build-avx2/tools/gpt2_generate
 
 `GPT2_BACKEND` is `scalar` (the default), `avx2`, or `wasm_simd128` through
-`web/build.sh`. The full sequence -- benchmarks, quantization and its eval, the
+`web/build.sh`. `GPT2_NUMERICS` is `exact` (the default: no FMA, every backend
+bit-identical) or `fast` (FMA, judged by tolerance and the eval instead). The
+KV-cached dump is not optional: the 1024-position run gates through it. The full sequence -- benchmarks, quantization and its eval, the
 wasm checks -- and the procedure for changing the engine without breaking what
 it proves are in [docs/maintaining.md](docs/maintaining.md).
 
@@ -217,6 +237,12 @@ The long versions are in [docs/findings.md](docs/findings.md).
 7. **A benchmark on battery measures the clock.** One matrix came out 2.4x
    slow with nothing in the results to say why; the harness now records the
    power state.
+8. **"No FMA" was only enforced on x86.** Clang on arm64 fused 30
+   multiply-adds in the scalar backend while every check by tolerance still
+   passed; bit-identity against wasm caught it at the first matmul.
+9. **At 1024 positions, the fp32 rule is beyond fp32.** The engine is closer
+   to a float64 answer than PyTorch is, and neither meets the rule at every
+   element; the long run gates on its last position.
 
 ## Status
 
