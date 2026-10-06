@@ -86,9 +86,11 @@ def main() -> int:
               "and does not count as a result.", file=sys.stderr)
 
     args.out.mkdir(parents=True, exist_ok=True)
-    cmd = [str(args.tool), "--out", str(args.out),
-           "--window", str(args.window), "--windows", str(args.windows),
-           "--kl-stride", str(args.kl_stride), "--threads", str(args.threads)]
+    # A .js tool is an Emscripten build, run by Node -- as in bench/run.py.
+    cmd = ["node"] if args.tool.suffix == ".js" else []
+    cmd += [str(args.tool), "--out", str(args.out),
+            "--window", str(args.window), "--windows", str(args.windows),
+            "--kl-stride", str(args.kl_stride), "--threads", str(args.threads)]
     if args.weights is not None:
         cmd += ["--weights", str(args.weights)]
     print(f"running {' '.join(cmd)}", file=sys.stderr)
@@ -147,6 +149,10 @@ def main() -> int:
         return status
 
     parts = [started.strftime("%Y%m%dT%H%M%SZ"), sha[:7], measured["policy"]]
+    # A fast-numerics build computes fp32 with fused multiply-adds: not the
+    # exact engine, so not filed under its name.
+    if measured["backend"].endswith("-fast"):
+        parts.append("fast")
     if dirty:
         parts.append("dirty")
     out = RESULTS / ("-".join(parts) + ".json")

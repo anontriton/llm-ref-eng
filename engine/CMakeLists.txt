@@ -25,6 +25,26 @@ endif()
 # much. GPT2_NUMERICS=fast, below, is the one place it is lifted.
 add_compile_options(-Wall -Wextra -fno-fast-math -ffp-contract=off)
 
+# Numerics tier. "exact" is everything above: no contraction, every backend
+# bit-identical to scalar, the oracle's comparison meaningful across all of
+# them. "fast" lifts that for the one instruction it costs -- fused
+# multiply-add (FMA on AVX2, relaxed-SIMD madd on wasm, compiler contraction on
+# scalar where the target has it) -- and gives up bit-identity with it. A fast
+# build names itself "<backend>-fast" everywhere a backend is recorded, and is
+# held to the oracle's tolerance and to eval/metrics.py against the exact fp32
+# engine instead.
+set(GPT2_NUMERICS "exact" CACHE STRING "Numerics tier: exact or fast")
+set_property(CACHE GPT2_NUMERICS PROPERTY STRINGS exact fast)
+if(GPT2_NUMERICS STREQUAL "fast")
+  add_compile_options(-ffp-contract=fast)
+  add_compile_definitions(GPT2_FAST_NUMERICS=1)
+  set(GPT2_CONTRACT "-ffp-contract=fast")
+elseif(GPT2_NUMERICS STREQUAL "exact")
+  set(GPT2_CONTRACT "-ffp-contract=off")
+else()
+  message(FATAL_ERROR "GPT2_NUMERICS=${GPT2_NUMERICS}: expected exact or fast")
+endif()
+
 # Which SIMD backend to build. Exactly one backend_*.cpp is compiled -- they
 # define the same symbols -- and the kernels never name the choice, they just
 # call gpt2::backend::*.
@@ -46,24 +66,34 @@ list(APPEND GPT2_SOURCES "${GPT2_BACKEND_SOURCE}")
 # -mavx2 without -mfma, plus -ffp-contract=off: a fused multiply-add rounds
 # once where the scalar backend rounds twice, so allowing it -- whether written
 # as an intrinsic or contracted by the compiler -- would make the two backends
-# disagree in the last bits. They are required to agree.
+# disagree in the last bits. They are required to agree -- in the exact tier.
+# The fast tier adds -mfma and fuses on purpose.
 if(GPT2_BACKEND STREQUAL "avx2")
+  set(GPT2_AVX2_FLAGS "-mavx2;${GPT2_CONTRACT}")
+  if(GPT2_NUMERICS STREQUAL "fast")
+    list(APPEND GPT2_AVX2_FLAGS "-mfma")
+  endif()
   set_source_files_properties("${GPT2_BACKEND_SOURCE}" PROPERTIES
-    COMPILE_OPTIONS "-mavx2;-ffp-contract=off")
+    COMPILE_OPTIONS "${GPT2_AVX2_FLAGS}")
 endif()
 
 # wasm_simd128 has no FMA to contract into, but the flag says why the backend
 # agrees with scalar instead of leaving it to the instruction set. No
-# -mrelaxed-simd: its fused multiply-add rounds however the host likes.
+# -mrelaxed-simd in the exact tier: its fused multiply-add rounds however the
+# host likes. The fast tier takes it for exactly that instruction.
 if(GPT2_BACKEND STREQUAL "wasm_simd128")
   if(NOT EMSCRIPTEN)
     message(FATAL_ERROR "GPT2_BACKEND=wasm_simd128 needs an Emscripten build: web/build.sh wasm_simd128")
   endif()
+  set(GPT2_WASM_FLAGS "-msimd128;${GPT2_CONTRACT}")
+  if(GPT2_NUMERICS STREQUAL "fast")
+    list(APPEND GPT2_WASM_FLAGS "-mrelaxed-simd")
+  endif()
   set_source_files_properties("${GPT2_BACKEND_SOURCE}" PROPERTIES
-    COMPILE_OPTIONS "-msimd128;-ffp-contract=off")
+    COMPILE_OPTIONS "${GPT2_WASM_FLAGS}")
 endif()
 
-message(STATUS "gpt2: backend ${GPT2_BACKEND}")
+message(STATUS "gpt2: backend ${GPT2_BACKEND}, numerics ${GPT2_NUMERICS}")
 
 # Phase 5: the same sources under Emscripten, configured with emcmake (see
 # web/build.sh). Every tool becomes a .js + .wasm pair run by Node, which the

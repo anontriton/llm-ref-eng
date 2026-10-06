@@ -2,7 +2,8 @@
 # Build the engine to WebAssembly: the same engine/ sources, configured with
 # emcmake. Every tool and test comes out as a .js + .wasm pair run by Node.
 #
-#     web/build.sh [scalar|wasm_simd128]      # -> web/build/engine-<backend>/
+#     web/build.sh [scalar|wasm_simd128] [fast]
+#                                  # -> web/build/engine-<backend>[-fast]/
 #
 # Then, from the repo root, the Phase 2 proof unchanged:
 #
@@ -14,8 +15,21 @@
 set -euo pipefail
 
 backend="${1:-scalar}"
+shift || true
+# Options after the backend:
+#   fast  the fast numerics tier -- relaxed-SIMD madd, judged by tolerance and
+#         eval rather than bit-identity
+numerics=exact
+suffix=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    fast) numerics=fast; suffix="$suffix-fast" ;;
+    *) echo "web/build.sh: unknown option $1 (expected fast)" >&2; exit 2 ;;
+  esac
+  shift
+done
 root="$(cd "$(dirname "$0")/.." && pwd)"
-build="$root/web/build/engine-$backend"
+build="$root/web/build/engine-$backend$suffix"
 
 # Arch's emscripten package leaves the compiler drivers off PATH.
 if ! command -v emcmake >/dev/null; then
@@ -23,5 +37,6 @@ if ! command -v emcmake >/dev/null; then
 fi
 
 emcmake cmake -S "$root/engine" -B "$build" -G Ninja \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGPT2_BACKEND="$backend"
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGPT2_BACKEND="$backend" \
+  -DGPT2_NUMERICS="$numerics"
 cmake --build "$build" -j
