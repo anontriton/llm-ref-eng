@@ -38,11 +38,18 @@ jobs:
       - name: Build tools
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
 
+      # Pinned, not latest: the wasm build's numbers depend on the toolchain --
+      # its libm decides GELU's tanh (docs/findings.md, 7) -- so a new release
+      # must arrive as a reviewed change, not as a deploy that fails, or
+      # quietly passes with different bits. 6.0.10 is the version this gate
+      # was last validated with; change both together.
       - name: Emscripten
+        env:
+          EMSDK_VERSION: "6.0.10"
         run: |
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
-          "$RUNNER_TEMP/emsdk/emsdk" install latest
-          "$RUNNER_TEMP/emsdk/emsdk" activate latest
+          git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
           echo "EMSDK=$RUNNER_TEMP/emsdk" >> "$GITHUB_ENV"
           echo "EM_CONFIG=$RUNNER_TEMP/emsdk/.emscripten" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
@@ -72,20 +79,44 @@ jobs:
           .venv/bin/python reference/dump.py
           .venv/bin/python scripts/export_runs.py
 
-      - name: Build -- the wasm engine, and native for the eval
+      - name: Build -- the wasm engine, threaded and not, and native for the eval
         run: |
           emcc --version | head -1
           web/build.sh wasm_simd128
+          web/build.sh wasm_simd128 mt
           cmake -S engine -B engine/build-avx2 -G Ninja -DGPT2_BACKEND=avx2
           cmake --build engine/build-avx2
+
+      # The oracle now holds a run that fills the 1024-position context. Its
+      # whole-sequence comparison is reported, and its KV-cached row 1023 is
+      # gated (docs/findings.md, 13) -- so the cached dump is a gate here, not
+      # an extra.
+      - name: Gate -- the oracle's own self-tests
+        run: .venv/bin/python oracle/test_compare.py
 
       - name: Gate -- wasm engine against the oracle
         run: |
           ctest --test-dir web/build/engine-wasm_simd128 --output-on-failure
           node web/build/engine-wasm_simd128/tools/gpt2_dump.js --out web/build/dumps
           .venv/bin/python oracle/compare.py web/build/dumps/manifest.json
+          node web/build/engine-wasm_simd128/tools/gpt2_dump.js --kv-cache --out web/build/dumps-kv
+          .venv/bin/python oracle/compare.py web/build/dumps-kv/manifest.json
+          node web/build/engine-wasm_simd128/tools/gpt2_dump.js --last-logits --out web/build/dumps-last
+          .venv/bin/python oracle/compare.py web/build/dumps-last/manifest.json
+          rm -rf web/build/dumps-last
           .venv/bin/python oracle/check_greedy.py --kv-cache \
             --engine web/build/engine-wasm_simd128/tools/gpt2_generate.js
+
+      # Threads may not change a bit: the threaded build at 4 threads against
+      # the single-threaded one, whole sequence and KV-cached.
+      - name: Gate -- threaded wasm engine is bit-identical
+        run: |
+          ctest --test-dir web/build/engine-wasm_simd128-mt --output-on-failure
+          node web/build/engine-wasm_simd128-mt/tools/gpt2_dump.js --threads 4 --out web/build/dumps-mt
+          .venv/bin/python oracle/identical.py web/build/dumps web/build/dumps-mt --verify
+          node web/build/engine-wasm_simd128-mt/tools/gpt2_dump.js --threads 4 --kv-cache --out web/build/dumps-mt-kv
+          .venv/bin/python oracle/identical.py web/build/dumps-kv web/build/dumps-mt-kv --verify
+          rm -rf web/build/dumps web/build/dumps-mt
 
       - name: Gate -- tokenizer and web module
         run: |
