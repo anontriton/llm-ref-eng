@@ -149,6 +149,20 @@ def _as_kv_row(row: int, *, hold: int | None = None):
     return mutate
 
 
+def _last_logits(row: int | None, *, hold: int = -1):
+    """Reduce the candidate's logits to one position, as a forward under
+    Logits::Last writes them. `row` is what the record declares (None: it
+    declares nothing); `hold` is the position actually kept, -1 the last."""
+    def mutate(manifest: dict, dest: Path) -> None:
+        rewrite(manifest, dest, "logits",
+                lambda a: np.take(a, [hold % a.shape[1]], axis=1))
+        if row is not None:
+            record = next(r for r in manifest["runs"][0]["tensors"]
+                          if r["name"] == "logits")
+            record["row"] = row
+    return mutate
+
+
 def _quantized_policy(manifest: dict, dest: Path) -> None:
     manifest["tolerance"]["policy"] = "int8"
 
@@ -229,6 +243,18 @@ CASES = [
     # With one query row, the causal triangle cannot be read off the tensor's
     # own shape: np.tril of a 1-by-T grid marks a single column and would
     # excuse every other key the row actually attended to.
+    # Last-row logits: one tensor holds one position while every other tensor
+    # in the run holds all of them. The declared row is what gets compared --
+    # the last case proves it is not just trusted.
+    ("last-row logits compare against the reference's matching row",
+     _last_logits(4), 0, "ORACLE COMPARISON PASSED"),
+
+    ("last-row logits without a declared row are a shape failure",
+     _last_logits(None), 1, "first divergence at logits"),
+
+    ("last-row logits declaring the wrong row are caught",
+     _last_logits(4, hold=0), 1, "first divergence at logits"),
+
     ("kv_row still checks the whole causal row of attn.scores",
      lambda m, d: (_as_kv_row(4)(m, d),
                    rewrite(m, d, "block.0.attn.scores",

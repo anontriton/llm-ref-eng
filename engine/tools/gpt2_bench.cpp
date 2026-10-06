@@ -60,6 +60,7 @@ int main(int argc, char** argv) {
   int prefill_repeat = 3;
   bool kv_cache = false;
   int threads = 1;
+  gpt2::Logits logits_rows = gpt2::Logits::Last;
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -76,13 +77,16 @@ int main(int argc, char** argv) {
     else if (arg == "--generate") generate = std::stoi(next("--generate"));
     else if (arg == "--kv-cache") kv_cache = true;
     else if (arg == "--threads") threads = std::stoi(next("--threads"));
+    // Every row of logits, as Model::forward computed before Logits::Last:
+    // for timing against a result recorded before the change.
+    else if (arg == "--all-logits") logits_rows = gpt2::Logits::All;
     else if (arg == "--prefill-repeat") {
       prefill_repeat = std::stoi(next("--prefill-repeat"));
     } else if (arg == "-h" || arg == "--help") {
       std::fprintf(stderr,
                    "usage: %s [--weights FILE] [--prompts FILE] [--run NAME]\n"
                    "          [--generate N] [--prefill-repeat N] "
-                   "[--kv-cache] [--threads N]\n"
+                   "[--kv-cache] [--threads N] [--all-logits]\n"
                    "Prints one JSON object of timings on stdout; progress on "
                    "stderr.\n", argv[0]);
       return 0;
@@ -138,7 +142,8 @@ int main(int argc, char** argv) {
       cache.clear();
       const Clock::time_point t0 = Clock::now();
       prefill_logits =
-          kv_cache ? model.forward(prompt, cache) : model.forward(prompt);
+          kv_cache ? model.forward(prompt, cache, nullptr, logits_rows)
+                   : model.forward(prompt, nullptr, logits_rows);
       const double elapsed = ms_since(t0);
       // Keep the compiler from deciding the forward pass is dead code.
       if (prefill_logits.empty()) throw std::runtime_error("empty logits");
@@ -157,9 +162,10 @@ int main(int argc, char** argv) {
     // whole prompt, so feeding it any prompt token again would append a
     // duplicate and decode a different sequence -- which is exactly what the
     // generated ids caught when this loop got it wrong.
+    const size_t prefill_rows = prefill_logits.size() / static_cast<size_t>(vocab);
     int next_id = argmax(
-        prefill_logits.data() +
-            static_cast<size_t>(prompt_tokens - 1) * vocab, vocab);
+        prefill_logits.data() + (prefill_rows - 1) * static_cast<size_t>(vocab),
+        vocab);
     generated.push_back(next_id);
     ids.push_back(next_id);
 
@@ -171,8 +177,9 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "\r  decode %d/%d  ", s + 1, decode_steps);
       const std::vector<int32_t> step_ids{next_id};
       const std::vector<float> logits =
-          kv_cache ? model.forward(step_ids, cache) : model.forward(ids);
-      const size_t rows = kv_cache ? 1 : ids.size();
+          kv_cache ? model.forward(step_ids, cache, nullptr, logits_rows)
+                   : model.forward(ids, nullptr, logits_rows);
+      const size_t rows = logits.size() / static_cast<size_t>(vocab);
       const float* last =
           logits.data() + (rows - 1) * static_cast<size_t>(vocab);
       next_id = argmax(last, vocab);
@@ -195,6 +202,11 @@ int main(int argc, char** argv) {
     // number filed as fp32 is worse than no number.
     std::printf("  \"policy\": \"%s\",\n", weights.policy().c_str());
     std::printf("  \"threads\": %d,\n", gpt2::threads::count());
+    // Which logits rows each forward computed. "last" became the default when
+    // Model::forward learned to skip the rest; a result from before then
+    // computed all of them, and carries no such field.
+    std::printf("  \"logits\": \"%s\",\n",
+                logits_rows == gpt2::Logits::Last ? "last" : "all");
     std::printf("  \"run\": \"%s\",\n", run->name.c_str());
     std::printf("  \"prompt_tokens\": %d,\n", prompt_tokens);
     std::printf("  \"generate\": %d,\n", generate);

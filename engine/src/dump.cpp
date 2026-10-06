@@ -38,9 +38,9 @@ Dumper::Dumper(std::string out_dir, const Weights& weights)
   fs::create_directories(fs::path(out_dir_) / "activations");
 }
 
-Tap Dumper::begin(const Run& run, int kv_row) {
+Tap Dumper::begin(const Run& run, int kv_row, bool last_logits) {
   if (open_) throw std::runtime_error("dump: previous run was not ended");
-  current_ = RunDump{run, kv_row, {}};
+  current_ = RunDump{run, kv_row, last_logits, {}};
   open_ = true;
 
   const fs::path dir = fs::path(out_dir_) / "activations" / run.name;
@@ -87,6 +87,18 @@ Tap Dumper::begin(const Run& run, int kv_row) {
     const std::string suffix = ".attn.scores";
     rec.causal_region = name.size() >= suffix.size() &&
                         name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+
+    // Under Logits::Last the logits are one row, the sequence's last. Insist
+    // on the shape rather than trust it: a record that names a row it does not
+    // hold is exactly the kind of thing compare.py exists to refuse.
+    if (current_.last_logits && name == "logits") {
+      if (shape.size() != 3 || shape[1] != 1) {
+        throw std::runtime_error("dump: last-row logits must be [1, 1, vocab]");
+      }
+      rec.row = current_.kv_row >= 0
+                    ? current_.kv_row
+                    : static_cast<int>(current_.run.input_ids.size()) - 1;
+    }
 
     npy::write_f32((dir / rec.file).string(), data, shape);
     current_.tensors.push_back(std::move(rec));
@@ -191,6 +203,7 @@ void Dumper::write_manifest() const {
       j.kv("max", r.max);
       j.kv("absmax", r.absmax);
       if (r.causal_region) j.kv("region", std::string("causal_lower_triangle"));
+      if (r.row >= 0) j.kv("row", static_cast<long long>(r.row));
       j.end_object();
     }
     j.end_array();

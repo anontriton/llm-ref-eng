@@ -97,9 +97,9 @@ EMSCRIPTEN_KEEPALIVE const float* gpt2_forward(const int32_t* ids, int n) {
   try {
     if (!g_model) throw std::runtime_error("no weights loaded");
     const std::vector<int32_t> input(ids, ids + n);
-    const std::vector<float> logits = g_model->forward(input, *g_cache);
-    const size_t vocab = static_cast<size_t>(g_weights->config().vocab_size);
-    g_last.assign(logits.end() - static_cast<std::ptrdiff_t>(vocab), logits.end());
+    // Only the last row: it is all the page samples from, and computing the
+    // others was 31% of a prompt's prefill.
+    g_last = g_model->forward(input, *g_cache, nullptr, gpt2::Logits::Last);
     return g_last.data();
   } catch (const std::exception& e) {
     g_error = e.what();

@@ -27,13 +27,17 @@ namespace {
 void usage(const char* argv0) {
   std::fprintf(stderr,
                "usage: %s [--weights FILE] [--runs FILE] [--out DIR]\n"
-               "          [--run NAME]... [--kv-cache] [--threads N] [--quiet]\n"
+               "          [--run NAME]... [--kv-cache] [--last-logits] [--threads N]\n"
+               "          [--quiet]\n"
                "  --weights  flat weight file   (default weights/gpt2-124m.bin)\n"
                "  --runs     run definitions    (default engine/runs.tsv)\n"
                "  --out      dump directory     (default engine/dumps)\n"
                "  --run      only this run, repeatable\n"
       "  --kv-cache decode the last token through the KV cache and dump\n"
       "             only that row (compare.py slices the reference)\n"
+      "  --last-logits\n"
+      "             compute logits for the last position only, as generation\n"
+      "             does (compare.py slices the reference's logits)\n"
       "  --threads  worker threads (default 1); dumps are identical at any\n"
       "             count, which is the property worth checking\n",
                argv0);
@@ -48,6 +52,7 @@ int main(int argc, char** argv) {
   std::vector<std::string> only;
   bool quiet = false;
   bool kv_cache = false;
+  bool last_logits = false;
   int threads = 1;
 
   for (int i = 1; i < argc; ++i) {
@@ -65,6 +70,7 @@ int main(int argc, char** argv) {
     else if (arg == "--run") only.push_back(next("--run"));
     else if (arg == "--quiet") quiet = true;
     else if (arg == "--kv-cache") kv_cache = true;
+    else if (arg == "--last-logits") last_logits = true;
     else if (arg == "--threads") threads = std::stoi(next("--threads"));
     else if (arg == "-h" || arg == "--help") { usage(argv[0]); return 0; }
     else {
@@ -99,6 +105,7 @@ int main(int argc, char** argv) {
       }
       const auto t0 = std::chrono::steady_clock::now();
       const int T = static_cast<int>(run.input_ids.size());
+      const gpt2::Logits rows = last_logits ? gpt2::Logits::Last : gpt2::Logits::All;
       if (kv_cache) {
         // Prefill everything but the last token untapped, then decode that
         // last token through the cache and dump only what it produced.
@@ -113,15 +120,15 @@ int main(int argc, char** argv) {
         if (T > 1) {
           const std::vector<int32_t> prefix(run.input_ids.begin(),
                                             run.input_ids.end() - 1);
-          model.forward(prefix, cache);
+          model.forward(prefix, cache, nullptr, rows);
           last.assign(run.input_ids.end() - 1, run.input_ids.end());
         }
-        const gpt2::Tap tap = dumper.begin(run, T - 1);
-        model.forward(last, cache, tap);
+        const gpt2::Tap tap = dumper.begin(run, T - 1, last_logits);
+        model.forward(last, cache, tap, rows);
         dumper.end();
       } else {
-        const gpt2::Tap tap = dumper.begin(run);
-        model.forward(run.input_ids, tap);
+        const gpt2::Tap tap = dumper.begin(run, -1, last_logits);
+        model.forward(run.input_ids, tap, rows);
         dumper.end();
       }
       const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(

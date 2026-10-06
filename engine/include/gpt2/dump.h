@@ -33,7 +33,12 @@ class Dumper {
   // absolute position that row sits at, and the manifest carries it so
   // oracle/compare.py knows to slice the reference at the same row instead of
   // failing on the shape. -1 means an ordinary whole-sequence dump.
-  Tap begin(const Run& run, int kv_row = -1);
+  //
+  // `last_logits` marks a forward run under Logits::Last, whose "logits"
+  // tensor holds only the final position. The record says which row that is,
+  // so compare.py slices the reference there for that one tensor and compares
+  // everything else whole.
+  Tap begin(const Run& run, int kv_row = -1, bool last_logits = false);
 
   // Seal the run started by begin().
   void end();
@@ -54,11 +59,13 @@ class Dumper {
     double max = 0.0;
     double absmax = 0.0;
     bool causal_region = false;
+    int row = -1;  // the one position this tensor holds, if it holds one
   };
 
   struct RunDump {
     Run run;
     int kv_row = -1;
+    bool last_logits = false;
     std::vector<Record> tensors;
   };
 

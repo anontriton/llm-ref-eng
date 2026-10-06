@@ -329,17 +329,22 @@ def main() -> int:
                                       "missing from candidate"})
                 break
 
+            # The position this tensor holds, if it holds just one: the
+            # run's kv_row for a cached dump, or the tensor's own "row" --
+            # last-row logits, which a forward under Logits::Last computes
+            # for the final position alone.
+            row = other.get("row", kv_row)
             try:
                 a = load_tensor(ref_base, ref_run, record, verify)
                 b = load_tensor(cand_base, cand_run, other, verify)
-                if kv_row is not None:
-                    a = slice_row(a, tname, kv_row)
+                if row is not None:
+                    a = slice_row(a, tname, row)
             except (FileNotFoundError, ValueError) as exc:
                 divergence = (tname, {"ok": False, "reason": str(exc)})
                 break
 
             verdict = compare_tensor(a, b, tol, record.get("region"),
-                                     q_offset=kv_row or 0)
+                                     q_offset=row or 0)
             checked += 1
 
             if args.verbose:

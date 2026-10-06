@@ -91,13 +91,16 @@ int main(int argc, char** argv) {
       // Cached: feed only what the cache has not seen -- the whole prompt on
       // the first step, then one token at a time. Uncached: feed everything,
       // every time.
-      const std::vector<float> logits =
-          kv_cache ? model.forward(pending, cache) : model.forward(ids);
+      //
       // Only the final row matters: it is the distribution over what comes
       // next. Uncached that row is position T-1 of the whole sequence; cached
-      // it is the last of the rows just appended. Same row either way.
-      const size_t rows = kv_cache ? pending.size() : ids.size();
-      const float* last = logits.data() + (rows - 1) * static_cast<size_t>(vocab);
+      // it is the last of the rows just appended. Same row either way, and
+      // Logits::Last computes only it.
+      const gpt2::Logits only_last = gpt2::Logits::Last;
+      const std::vector<float> logits =
+          kv_cache ? model.forward(pending, cache, nullptr, only_last)
+                   : model.forward(ids, nullptr, only_last);
+      const float* last = logits.data();
       const int32_t next = static_cast<int32_t>(
           std::max_element(last, last + vocab) - last);
       generated.push_back(next);
