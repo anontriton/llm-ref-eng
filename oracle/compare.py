@@ -198,6 +198,20 @@ def compare_tensor(ref: np.ndarray, cand: np.ndarray, tol: dict,
     }
 
 
+def reported_not_gated(ref_run: dict, cand_run: dict) -> bool:
+    """Whether this run's tolerance misses are reported rather than failed.
+
+    Only for a run the *reference* marks whole_sequence: "report" -- the
+    1024-position run, whose reference is float64 and where no fp32
+    implementation meets the rule at every element of every position -- and
+    only for a whole-sequence candidate. A KV-cached candidate of the same run
+    is gated as usual. A shape, NaN or provenance failure fails regardless:
+    those are bugs at any length.
+    """
+    return (ref_run.get("whole_sequence") == "report"
+            and cand_run.get("kv_row") is None)
+
+
 # --------------------------------------------------------------------------
 # provenance
 # --------------------------------------------------------------------------
@@ -292,6 +306,7 @@ def main() -> int:
     wanted = args.runs or [r["name"] for r in ref_manifest["runs"]]
     failed = False
     checked = 0
+    n_reported = 0
 
     for ref_run in ref_manifest["runs"]:
         name = ref_run["name"]
@@ -318,6 +333,8 @@ def main() -> int:
 
         worst = None
         divergence = None
+        reported: list[tuple[str, dict, float | None]] = []
+        report_only = reported_not_gated(ref_run, cand_run)
 
         for record in sorted(ref_run["tensors"], key=lambda r: r["order"]):
             tname = record["name"]
@@ -355,16 +372,31 @@ def main() -> int:
                       f"rel {verdict.get('max_rel', 0):.3e}")
 
             if not verdict["ok"]:
+                if report_only and verdict["reason"] == "tolerance exceeded":
+                    reported.append((tname, verdict, record.get("fp32_budget")))
+                    n_reported += 1
+                    continue
                 divergence = (tname, verdict)
                 break
 
             if worst is None or verdict["budget"] > worst[1]["budget"]:
                 worst = (tname, verdict)
 
-        if divergence is None:
+        if divergence is None and worst is None:
+            print("  PASS   (every tensor reported; none within the rule)")
+        elif divergence is None:
             tname, v = worst
             print(f"  PASS   worst tensor {tname} at {v['budget'] * 100:.1f}% of "
                   f"budget  (abs {v['max_abs']:.3e}, rel {v['max_rel']:.3e})")
+            if reported:
+                print(f"  REPORT {len(reported)} tensor(s) past the rule, not "
+                      f"gated (whole sequence against float64; the KV-cached "
+                      f"row gates):")
+                for tname, v, fp32 in reported:
+                    theirs = (f", PyTorch fp32 {fp32 * 100:.1f}%"
+                              if fp32 is not None else "")
+                    print(f"           {tname:24s} {v['budget'] * 100:7.1f}%"
+                          f"{theirs}")
         else:
             failed = True
             tname, v = divergence
@@ -385,7 +417,9 @@ def main() -> int:
     if failed:
         print("ORACLE COMPARISON FAILED", file=sys.stderr)
         return 1
-    print(f"ORACLE COMPARISON PASSED  ({checked} tensors within tolerance)")
+    within = checked - n_reported
+    print(f"ORACLE COMPARISON PASSED  ({within} tensors within tolerance"
+          + (f", {n_reported} reported" if n_reported else "") + ")")
     return 0
 
 
